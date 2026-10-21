@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <!-- Relative links and images resolve against the folder of the file being edited -->
+  <base href="https://hb.docs/" />
+  <style>
+    html { background: #161616; }
+    body { margin: 0; padding: 18px 26px 40px; color: #d6d6d6; font: 15px/1.6 'Segoe UI', sans-serif; }
+    h1, h2, h3, h4, h5, h6 { color: #f2f2f2; line-height: 1.25; margin: 1.3em 0 0.5em; }
+    h1 { font-size: 1.9em; border-bottom: 1px solid #333; padding-bottom: 0.25em; }
+    h2 { font-size: 1.45em; border-bottom: 1px solid #2a2a2a; padding-bottom: 0.2em; }
+    h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
+    a { color: #6cb6ff; }
+    code { font-family: 'Cascadia Mono', Consolas, monospace; font-size: 0.9em; background: #262626; padding: 0.15em 0.35em; border-radius: 4px; }
+    pre { background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
+    pre code { background: none; padding: 0; }
+    blockquote { margin: 0.8em 0; padding: 0.1em 1em; border-left: 3px solid #444; color: #a8a8a8; }
+    table { border-collapse: collapse; margin: 0.8em 0; }
+    th, td { border: 1px solid #3a3a3a; padding: 5px 11px; }
+    th { background: #222; }
+    img { max-width: 100%; }
+    hr { border: 0; border-top: 1px solid #333; margin: 1.5em 0; }
+    ul.contains-task-list { list-style: none; padding-left: 1.2em; }
+    #empty { color: #777; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #161616; }
+    ::-webkit-scrollbar-thumb { background: #444; border-radius: 5px; }
+    mjx-container[display="true"] { margin: 1em 0; overflow-x: auto; overflow-y: hidden; }
+    mjx-container svg { color: #e8e8e8; }
+    mjx-merror { color: #ff8a80; background: none; }
+  </style>
+  <script>
+    // Equations: $…$ inline and $$…$$ displayed (Markdig emits them as \(…\) and \[…\]).
+    window.MathJax = {
+      tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']], processEscapes: true },
+      svg: { fontCache: 'global' },
+      startup: {
+        typeset: false,
+        // Content that arrived while MathJax was still loading is typeset once it is ready.
+        pageReady: () => MathJax.startup.defaultPageReady().then(() => window.renderPreview?.()),
+      },
+    };
+  </script>
+  <script src="https://hb.assets/mathjax.js" async></script>
+</head>
+<body>
+  <div id="content"><p id="empty">The preview appears here.</p></div>
+  <script>
+    const content = document.getElementById('content');
+    let html = content.innerHTML;
+    let typesetting = Promise.resolve();
+    // Replaces the content and typesets its equations. Runs are queued so a fast
+    // sequence of edits never overlaps (MathJax must not typeset concurrently).
+    window.renderPreview = () => {
+      typesetting = typesetting.then(() => {
+        if (window.MathJax?.typesetClear) MathJax.typesetClear([content]);
+        content.innerHTML = html;
+        if (window.MathJax?.typesetPromise && html.includes('class="math')) return MathJax.typesetPromise([content]);
+      }).catch(() => {});
+    };
+    window.chrome.webview.addEventListener('message', e => {
+      html = e.data.html || '<p id="empty">Nothing to preview yet.</p>';
+      renderPreview();
+    });
+    // Text selected with the mouse is copied as soon as the button is released.
+    document.addEventListener('mouseup', e => {
+      const text = e.button === 0 ? String(window.getSelection()) : '';
+      if (text) window.chrome.webview.postMessage({ type: 'copy', text });
+    });
+    // Links to headings scroll inside the preview instead of navigating away.
+    document.addEventListener('click', e => {
+      const link = e.target.closest('a');
+      const href = link && link.getAttribute('href');
+      if (href && href.startsWith('#')) {
+        e.preventDefault();
+        const target = document.getElementById(decodeURIComponent(href.slice(1)));
+        if (target) target.scrollIntoView();
+      }
+    });
+  </script>
+</body>
+</html>

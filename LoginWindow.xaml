@@ -1,0 +1,25 @@
+<Window x:Class="HB.LoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HB Voice Workspace" Width="380" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen">
+    <StackPanel Margin="24">
+        <TextBlock Text="Log in" FontSize="20" FontWeight="SemiBold" />
+        <TextBlock x:Name="IntroText" FontSize="12" Opacity="0.7" Margin="0,4,0,16" TextWrapping="Wrap"
+                   Text="Your workspaces, tab names and saved connections open with your user." />
+
+        <TextBlock Text="User" FontSize="11" Opacity="0.7" Margin="0,0,0,3" />
+        <TextBox x:Name="UserBox" />
+
+        <TextBlock Text="Password" FontSize="11" Opacity="0.7" Margin="0,12,0,3" />
+        <PasswordBox x:Name="PasswordBox" />
+
+        <TextBlock x:Name="ErrorText" Foreground="#E5484D" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap"
+                   Visibility="Collapsed" />
+
+        <Button Content="Log in" IsDefault="True" HorizontalAlignment="Stretch" Padding="0,8" Margin="0,18,0,0"
+                Click="Login_Click" />
+        <Button Content="Create new user" HorizontalAlignment="Stretch" Padding="0,8" Margin="0,8,0,0"
+                Click="Create_Click" />
+    </StackPanel>
+</Window>
