@@ -1,22 +1,20 @@
-using System.IO;
 using System.Windows;
-using HB.Documents;
 
 namespace HB;
 
 public partial class App : Application
 {
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         SelectToCopy.Install();
+        SmoothScroll.Install();
 
-        // PDF copies shown by the previous run.
-        foreach (var file in Directory.EnumerateFiles(PreviewView.PdfFolder, "*.pdf"))
-        {
-            try { File.Delete(file); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        }
+        // The slow components warm up behind the splash screen; then the user logs in.
+        var splash = new SplashWindow();
+        splash.Show();
+        await WarmUp.RunAsync(splash.Report);
+        splash.Close();
         ShowLogin();
     }
 

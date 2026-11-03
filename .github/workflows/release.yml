@@ -1,0 +1,50 @@
+# Builds the installer and attaches it to a GitHub release whenever a version tag (v1.2.3) is pushed.
+# The same job can be started by hand from the Actions tab to check that everything still builds.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Version from the tag
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF.Substring(11) } else { '0.0.0' }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Publish (self-contained, win-x64)
+        run: dotnet publish HB.csproj -c Release -r win-x64 --self-contained -p:Version=${{ env.VERSION }} -o publish/win-x64
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ env.VERSION }} installer\HB.iss'
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path publish/win-x64/* -DestinationPath dist/HB-Voice-Workspace-${{ env.VERSION }}-win-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HB-Voice-Workspace-${{ env.VERSION }}
+          path: dist/*
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

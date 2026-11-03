@@ -1,11 +1,16 @@
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
 using Microsoft.Win32;
 
 namespace HB.Documents;
@@ -37,6 +42,7 @@ public partial class DocumentPane : UserControl
     private string? _file;
     private bool _dirty;
     private bool _loadingFile;
+    private bool _stopped;
 
     private PreviewWindow? _window;
     private Action<PreviewView>? _output; // replays the current output on whichever view shows it
@@ -49,6 +55,43 @@ public partial class DocumentPane : UserControl
     /// <summary>Raised when something the workspace remembers changed (open file, browser minimized).</summary>
     public event Action? StateChanged;
 
+    /// <summary>Raised when the user asks to open or close the terminal that the main window shows under the transcriber.</summary>
+    public event Action? TerminalToggleRequested;
+
+    /// <summary>Keeps the terminal button in step with whether the terminal is shown.</summary>
+    public void SetTerminalOpen(bool open) =>
+        TerminalButton.Content = open ? "Close PowerShell" : "PowerShell";
+
+    /// <summary>Completes when the preview's browser engine is ready to show output.</summary>
+    public Task WhenReadyAsync() => (_window?.View ?? DockedPreview).Ready;
+
+    /// <summary>
+    /// A stopped workspace keeps its files on view but uses no resources: the editor is read-only,
+    /// nothing is rendered or compiled, and the separate preview window is closed.
+    /// </summary>
+    public void SetStopped(bool stopped)
+    {
+        if (_stopped == stopped) return;
+        _stopped = stopped;
+        Editor.IsReadOnly = stopped;
+        NewFileButton.IsEnabled = CompileButton.IsEnabled = PopOutButton.IsEnabled = TerminalButton.IsEnabled = !stopped;
+        if (stopped)
+        {
+            FlushSave();
+            ClosePreviewWindow();
+            StatusText.Text = "Stopped";
+            Present(view => view.ShowMessage(
+                "This workspace is stopped: its files are kept and shown here, but nothing is rendered. " +
+                "Press ▶ Start to start it again."));
+        }
+        else
+        {
+            StatusText.Text = "";
+            if (IsLatex) Compile();
+            else RenderMarkdown();
+        }
+    }
+
     public DocumentPane()
     {
         InitializeComponent();
@@ -59,6 +102,7 @@ public partial class DocumentPane : UserControl
         };
         _renderTimer.Tick += (_, _) => RenderMarkdown();
         UpdatePreviewPlacement();
+        SetTerminalOpen(false);
     }
 
     private bool IsLatex => _workspace?.IsLatex == true;
@@ -171,6 +215,7 @@ public partial class DocumentPane : UserControl
 
     private void Editor_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (FindBar.Visibility == Visibility.Visible) UpdateFindCount();
         if (_loadingFile) return;
         _dirty = true;
         StatusText.Text = "Editing…";
@@ -191,6 +236,201 @@ public partial class DocumentPane : UserControl
             if (IsLatex) Compile();
             e.Handled = true;
         }
+        else if (e.Key == Key.F3 && FindBox.Text.Length > 0)
+        {
+            Find(backwards: Keyboard.Modifiers == ModifierKeys.Shift);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape && FindBar.Visibility == Visibility.Visible)
+        {
+            CloseFind();
+            e.Handled = true;
+        }
+    }
+
+    // ---- Ctrl+F: find in the editor, filter the file browser ----
+
+    /// <summary>Opens the file filter when the focus is in the file browser, else the editor's find bar.</summary>
+    public void ShowFindFor(Visual? focused)
+    {
+        if (focused != null && BrowserPanel.IsVisible && BrowserPanel.IsAncestorOf(focused)) ShowFileFilter();
+        else if (_file != null) ShowFind();
+        else ShowFileFilter();
+    }
+
+    private FindHighlighter? _highlighter;
+    private Brush? _editorSelectionBrush;
+    private double _editorSelectionOpacity;
+
+    private void ShowFind()
+    {
+        if (FindBar.Visibility != Visibility.Visible)
+        {
+            FindBar.Visibility = Visibility.Visible;
+            // Matches are drawn over the text (yellow, the current one orange); the selection of
+            // the current match is made orange too, so it reads as one highlight.
+            if (_highlighter == null && AdornerLayer.GetAdornerLayer(Editor) is { } layer)
+                layer.Add(_highlighter = new FindHighlighter(Editor));
+            _editorSelectionBrush = Editor.SelectionBrush;
+            _editorSelectionOpacity = Editor.SelectionOpacity;
+            Editor.SelectionBrush = FindHighlighter.CurrentBrush;
+            Editor.SelectionOpacity = 0.5;
+        }
+        if (Editor.SelectionLength > 0 && Editor.SelectionLength < 200 && !Editor.SelectedText.Contains('\n'))
+            FindBox.Text = Editor.SelectedText;
+        FindBox.Focus();
+        FindBox.SelectAll();
+        UpdateFindCount(Editor.SelectionLength > 0 ? Editor.SelectionStart : null);
+    }
+
+    private void CloseFind()
+    {
+        if (FindBar.Visibility != Visibility.Visible) return;
+        FindBar.Visibility = Visibility.Collapsed;
+        FindCount.Text = "";
+        _highlighter?.Clear();
+        Editor.SelectionBrush = _editorSelectionBrush;
+        Editor.SelectionOpacity = _editorSelectionOpacity;
+        Editor.Focus();
+    }
+
+    private void FindClose_Click(object sender, RoutedEventArgs e) => CloseFind();
+    private void FindNext_Click(object sender, RoutedEventArgs e) => Find();
+    private void FindPrevious_Click(object sender, RoutedEventArgs e) => Find(backwards: true);
+
+    /// <summary>Typing searches as you go, from where the last match (or the caret) is.</summary>
+    private void FindBox_TextChanged(object sender, TextChangedEventArgs e) => Find(fromSelectionStart: true);
+
+    private void FindBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Enter or Key.F3:
+                Find(backwards: Keyboard.Modifiers == ModifierKeys.Shift);
+                break;
+            case Key.Escape:
+                CloseFind();
+                break;
+            default:
+                return;
+        }
+        e.Handled = true;
+    }
+
+    /// <summary>Selects the next (or previous) match, wrapping around the document.</summary>
+    private void Find(bool backwards = false, bool fromSelectionStart = false)
+    {
+        var query = FindBox.Text;
+        var text = Editor.Text;
+        if (query.Length == 0)
+        {
+            FindCount.Text = "";
+            return;
+        }
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
+        int index;
+        if (backwards)
+        {
+            // Matches that end before the current one starts.
+            int from = Math.Min(Editor.SelectionStart + query.Length - 2, text.Length - 1);
+            index = from >= 0 ? text.LastIndexOf(query, from, comparison) : -1;
+            if (index < 0) index = text.LastIndexOf(query, comparison);
+        }
+        else
+        {
+            int from = fromSelectionStart ? Editor.SelectionStart : Editor.SelectionStart + Editor.SelectionLength;
+            index = from <= text.Length ? text.IndexOf(query, from, comparison) : -1;
+            if (index < 0) index = text.IndexOf(query, comparison);
+        }
+        if (index < 0)
+        {
+            UpdateFindCount(); // says "No matches" and clears the highlights
+            return;
+        }
+        Editor.Select(index, query.Length);
+        Editor.ScrollToLine(Editor.GetLineIndexFromCharacterIndex(index));
+        UpdateFindCount(index);
+    }
+
+    /// <summary>Counts and highlights the matches: "3 of 12", or "12 matches" when none is selected.</summary>
+    private void UpdateFindCount(int? selected = null)
+    {
+        var query = FindBox.Text;
+        if (query.Length == 0 || FindBar.Visibility != Visibility.Visible)
+        {
+            FindCount.Text = "";
+            _highlighter?.Clear();
+            return;
+        }
+        var text = Editor.Text;
+        var matches = new List<int>();
+        int rank = 0;
+        for (int at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase); at >= 0 && matches.Count < 10000;
+             at = text.IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase))
+        {
+            matches.Add(at);
+            if (at == selected) rank = matches.Count;
+        }
+        // The selection is the current match only while it still is one (the text may have changed).
+        bool current = selected is { } start && rank > 0 && Editor.SelectionStart == start && Editor.SelectionLength == query.Length;
+        _highlighter?.Show(matches, query.Length, current ? selected!.Value : -1);
+        FindCount.Text = matches.Count == 0 ? "No matches"
+            : current ? $"{rank} of {matches.Count}"
+            : matches.Count == 1 ? "1 match" : $"{matches.Count} matches";
+    }
+
+    private void ShowFileFilter()
+    {
+        if (_workspace == null) return;
+        if (_workspace.Options.DocumentBrowserCollapsed)
+        {
+            _workspace.Options.DocumentBrowserCollapsed = false;
+            UpdateBrowserVisibility();
+            StateChanged?.Invoke();
+        }
+        FileFilterBox.Visibility = Visibility.Visible;
+        FileFilterBox.Focus();
+        FileFilterBox.SelectAll();
+    }
+
+    private void CloseFileFilter()
+    {
+        FileFilterBox.Visibility = Visibility.Collapsed;
+        if (FileFilterBox.Text.Length > 0) FileFilterBox.Text = ""; // rebuilds the tree
+        FileTree.Focus();
+    }
+
+    private void FileFilter_TextChanged(object sender, TextChangedEventArgs e) => BuildTree();
+
+    private void FileFilter_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Escape:
+                CloseFileFilter();
+                break;
+            case Key.Enter or Key.Down:
+                if (FirstFile(FileTree.Items) is { } first)
+                {
+                    first.IsSelected = true; // opens it
+                    if (e.Key == Key.Down) first.Focus();
+                }
+                break;
+            default:
+                return;
+        }
+        e.Handled = true;
+    }
+
+    private static TreeViewItem? FirstFile(ItemCollection items)
+    {
+        foreach (var entry in items)
+        {
+            if (entry is not TreeViewItem { Tag: FileNode node } item) continue;
+            if (node.Kind != FileKind.Folder) return item;
+            if (FirstFile(item.Items) is { } inner) return inner;
+        }
+        return null;
     }
 
     private void NewFile_Click(object sender, RoutedEventArgs e)
@@ -259,12 +499,53 @@ public partial class DocumentPane : UserControl
     {
         FileTree.Items.Clear();
         if (_workspace == null) return;
-        var root = CreateNode(new FileNode(_workspace.Path, FileKind.Folder), _workspace.Name);
+        var filter = FileFilterBox.Text.Trim();
+        var root = CreateNode(new FileNode(_workspace.Path, FileKind.Folder), _workspace.Name, lazy: filter.Length == 0);
+        if (filter.Length > 0)
+        {
+            // Only the files whose name contains the filter, inside their (expanded) folders.
+            int budget = 5000;
+            AddMatching(root, new DirectoryInfo(_workspace.Path), filter, ref budget);
+            if (root.Items.Count == 0)
+                root.Items.Add(new TreeViewItem { Header = "No file name contains \"" + filter + "\"", IsEnabled = false });
+            else if (budget <= 0)
+                root.Items.Add(new TreeViewItem { Header = "… (the folder is large: not everything was searched)", IsEnabled = false });
+        }
         FileTree.Items.Add(root);
         root.IsExpanded = true;
     }
 
-    private TreeViewItem CreateNode(FileNode node, string name)
+    /// <summary>Adds to <paramref name="item"/> the files under <paramref name="folder"/> that match; returns whether any did.</summary>
+    private bool AddMatching(TreeViewItem item, DirectoryInfo folder, string filter, ref int budget)
+    {
+        bool any = false;
+        try
+        {
+            foreach (var child in folder.EnumerateDirectories().OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                if (IsHidden(child)) continue;
+                if (--budget <= 0) return any;
+                var node = CreateNode(new FileNode(child.FullName, FileKind.Folder), child.Name, lazy: false);
+                if (!AddMatching(node, child, filter, ref budget)) continue;
+                node.IsExpanded = true;
+                item.Items.Add(node);
+                any = true;
+            }
+            foreach (var file in folder.EnumerateFiles().OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                if (IsHidden(file)) continue;
+                if (--budget <= 0) return any;
+                if (!file.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
+                item.Items.Add(CreateNode(new FileNode(file.FullName, KindOf(file)), file.Name));
+                any = true;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return any;
+    }
+
+    /// <summary>A lazy folder node is filled when it is first expanded; a non-lazy one is filled by the caller.</summary>
+    private TreeViewItem CreateNode(FileNode node, string name, bool lazy = true)
     {
         var icon = node.Kind switch
         {
@@ -275,7 +556,7 @@ public partial class DocumentPane : UserControl
             _ => "📎 ",
         };
         var item = new TreeViewItem { Header = icon + name, Tag = node };
-        if (node.Kind == FileKind.Folder)
+        if (node.Kind == FileKind.Folder && lazy)
         {
             item.Items.Add(""); // placeholder so the folder can be expanded; filled on first use
             item.Expanded += Folder_Expanded;
@@ -325,6 +606,11 @@ public partial class DocumentPane : UserControl
     private void FileTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         if (e.NewValue is not TreeViewItem { Tag: FileNode node } || node.Kind == FileKind.Folder) return;
+        if (_stopped && node.Kind is FileKind.Image or FileKind.Pdf)
+        {
+            StatusText.Text = "Start the workspace to view " + Path.GetFileName(node.Path);
+            return;
+        }
         switch (node.Kind)
         {
             case FileKind.Document:
@@ -366,7 +652,7 @@ public partial class DocumentPane : UserControl
     {
         var name = Path.GetFileName(path);
         StatusText.Text = $"Showing {name}";
-        var html = $"<p><img src=\"{WebUtility.HtmlEncode(Uri.EscapeDataString(name))}\" alt=\"{WebUtility.HtmlEncode(name)}\"></p>" +
+        var html = $"<p><img src=\"{WebUtility.HtmlEncode(PreviewView.UrlOf(path))}\" alt=\"{WebUtility.HtmlEncode(name)}\"></p>" +
                    $"<p id=\"empty\">{WebUtility.HtmlEncode(name)}</p>";
         var folder = Path.GetDirectoryName(path);
         Present(view => view.ShowHtml(html, folder), isDocumentOutput: false);
@@ -385,14 +671,57 @@ public partial class DocumentPane : UserControl
     private void RenderMarkdown()
     {
         _renderTimer.Stop();
+        if (_stopped) return;
         if (_file == null)
         {
             Present(view => view.ShowHtml("", null));
             return;
         }
-        var html = Markdown.ToHtml(Editor.Text, Pipeline);
-        var folder = Path.GetDirectoryName(_file);
+        var folder = Path.GetDirectoryName(_file)!;
+        var html = RenderMarkdownHtml(Editor.Text, folder);
         Present(view => view.ShowHtml(html, folder));
+    }
+
+    // An image whose path has spaces, written without the <…> that Markdown requires for it:
+    // ![alt](my picture.png). Titles (![alt](x.png "title")) are left alone.
+    private static readonly Regex ImageWithSpaces = new(
+        @"!\[((?:[^\[\]]|\[[^\]]*\])*)\]\(([^()<>""'\r\n]*?[ \t][^()<>""'\r\n]*?)\)", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Renders markdown to HTML with every local image pointing at its file on disk, so that
+    /// relative paths (also ../ and backslashes), paths with spaces and absolute paths all show.
+    /// </summary>
+    public static string RenderMarkdownHtml(string markdown, string folder)
+    {
+        markdown = ImageWithSpaces.Replace(markdown, "![$1](<$2>)");
+        var document = Markdown.Parse(markdown, Pipeline);
+        foreach (var link in document.Descendants<LinkInline>())
+        {
+            if (!link.IsImage || string.IsNullOrWhiteSpace(link.Url)) continue;
+            var path = LocalPathOf(link.Url, folder);
+            if (path != null) link.Url = PreviewView.UrlOf(path);
+        }
+        return document.ToHtml(Pipeline);
+    }
+
+    /// <summary>The file a markdown link points at, or null when it is a web (or data:) URL.</summary>
+    private static string? LocalPathOf(string url, string folder)
+    {
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var absolute))
+            {
+                if (absolute.IsFile) return absolute.LocalPath;
+                // A drive letter is not a scheme, but Uri can take "c:" for one on short paths.
+                if (absolute.Scheme.Length > 1) return null;
+            }
+            var relative = Uri.UnescapeDataString(url).Replace('/', Path.DirectorySeparatorChar);
+            return Path.GetFullPath(Path.Combine(folder, relative));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or UriFormatException)
+        {
+            return null;
+        }
     }
 
     private void Compile_Click(object sender, RoutedEventArgs e)
@@ -404,7 +733,7 @@ public partial class DocumentPane : UserControl
     /// <summary>Builds the PDF of the main LaTeX file; changes made meanwhile trigger another build.</summary>
     private async void Compile()
     {
-        if (_workspace is not { } workspace) return;
+        if (_stopped || _workspace is not { } workspace) return;
         if (_compiling)
         {
             _compileAgain = true;
@@ -492,6 +821,21 @@ public partial class DocumentPane : UserControl
             try { File.Delete(previous); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } // still open in the viewer
         }
+    }
+
+    private void Terminal_Click(object sender, RoutedEventArgs e) => TerminalToggleRequested?.Invoke();
+
+    // ---- Writing assistants (Grammarly) ----
+
+    /// <summary>The switch is off at every start: the editor is for writing freely, checking is on demand.</summary>
+    private void GrammarToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        bool on = GrammarToggle.IsChecked == true;
+        Editor.AssistantsEnabled = on;
+        if (_stopped) return;
+        StatusText.Text = on ? "Grammarly can check the text" : "";
+        // Back to the text: assistants look at a field when it receives the focus.
+        if (_file != null) Editor.Focus();
     }
 
     // ---- Separate preview window ----

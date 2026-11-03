@@ -23,6 +23,10 @@
       fontSize: 13,
       cursorBlink: true,
       scrollback: 5000,
+      // A wheel notch moves about three lines (the browser's own step is roughly twice that),
+      // and the movement is animated.
+      scrollSensitivity: 0.5,
+      smoothScrollDuration: 120,
       theme: { background: '#0c0c0c', foreground: '#cccccc' }
     });
     const fit = new FitAddon.FitAddon();
@@ -68,16 +72,50 @@
       }
     });
 
+    // ---- Keeping the grid the size of the control ----
+    // The control can be created hidden, be shown later, change size with the window and the
+    // splitters, or move to a screen with another scale. Each of those re-fits the grid; the
+    // fit is repeated shortly after because the browser measures the new size asynchronously.
+    const sizeOf = () => ({ cols: term.cols, rows: term.rows });
+    const refit = () => {
+      if (container.offsetWidth <= 0 || container.offsetHeight <= 0) return;
+      const dims = fit.proposeDimensions();
+      if (!dims || !isFinite(dims.cols) || !isFinite(dims.rows) || dims.cols < 2 || dims.rows < 1) return;
+      if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
+    };
+    let refitTimer = 0;
+    const refitSoon = () => {
+      refit();
+      requestAnimationFrame(refit);
+      clearTimeout(refitTimer);
+      refitTimer = setTimeout(refit, 250);
+    };
+    // The host asks for this when it resizes or shows the control: the shell is also told the
+    // size again, in case a resize was missed while the control was hidden.
+    const resync = () => {
+      refitSoon();
+      setTimeout(() => { refit(); send('resize', sizeOf()); }, 300);
+    };
+
+    new ResizeObserver(refitSoon).observe(container);
+    window.addEventListener('resize', refitSoon);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) resync(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(refitSoon);
+    // A change of device pixel ratio means the window moved to a screen with another scale.
+    const watchScale = () => {
+      matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+        .addEventListener('change', () => { resync(); watchScale(); }, { once: true });
+    };
+    watchScale();
+
     host.addEventListener('message', e => {
       if (e.data === '\u0000focus') term.focus();
+      else if (e.data === '\u0000refit') resync();
       else term.write(e.data);
     });
 
-    const refit = () => { if (container.offsetWidth > 0 && container.offsetHeight > 0) fit.fit(); };
-    new ResizeObserver(refit).observe(container);
-
     refit();
-    send('ready', { cols: term.cols, rows: term.rows });
+    send('ready', sizeOf());
     term.focus();
   </script>
 </body>

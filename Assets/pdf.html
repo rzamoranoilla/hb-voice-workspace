@@ -1,0 +1,179 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <!-- The PDF preview: pdf.js draws the pages, so a new build of the document can be shown at
+       the very place the reader was (the built-in viewer starts again from the first page). -->
+  <style>
+    /* The scrollbar is always there, so the page width (and so the layout) never changes with the length */
+    html { background: #161616; overflow-y: scroll; }
+    body { margin: 0; padding: 14px 0 40px; color: #bbb; font: 13px 'Segoe UI', sans-serif; }
+    #pages { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    .page { position: relative; background: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6); }
+    .page canvas { display: block; }
+    .textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-size-adjust: none;
+                 forced-color-adjust: none; transform-origin: 0 0; z-index: 2; }
+    .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text;
+                                     transform-origin: 0% 0%; }
+    .textLayer ::selection { background: rgba(0, 120, 215, 0.35); }
+    #message { color: #888; text-align: center; margin: 30px 20px; }
+    #zoom { position: fixed; right: 18px; bottom: 14px; background: #000a; color: #ddd; padding: 3px 9px;
+            border-radius: 10px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #161616; }
+    ::-webkit-scrollbar-thumb { background: #444; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <div id="message">The PDF appears here.</div>
+  <div id="pages"></div>
+  <div id="zoom"></div>
+  <script type="module">
+    import * as pdfjsLib from 'https://hb.assets/pdf.min.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://hb.assets/pdf.worker.min.mjs';
+
+    const host = window.chrome.webview;
+    const pagesEl = document.getElementById('pages');
+    const messageEl = document.getElementById('message');
+    const zoomEl = document.getElementById('zoom');
+    const sideMargin = 24;
+
+    let doc = null;          // the pdf.js document being shown
+    let pages = [];          // { el, page, width, height, rendered }
+    let zoom = 1;            // 1 = the page fits the width of the window
+    let generation = 0;      // increases on each show(), so a slow load never replaces a newer one
+    let zoomTimer = 0;
+
+    const showMessage = text => { messageEl.textContent = text; messageEl.style.display = ''; pagesEl.replaceChildren(); pages = []; };
+
+    // ---- Where the reader is: the page at the top of the window and how far into it ----
+    const anchorNow = () => {
+      const y = window.scrollY;
+      for (let i = 0; i < pages.length; i++) {
+        const el = pages[i].el;
+        if (y < el.offsetTop + el.offsetHeight) return { index: i, fraction: Math.max(0, (y - el.offsetTop) / el.offsetHeight) };
+      }
+      return pages.length ? { index: pages.length - 1, fraction: 0 } : null;
+    };
+    const scrollToAnchor = anchor => {
+      if (!anchor || !pages.length) return;
+      const p = pages[Math.min(anchor.index, pages.length - 1)];
+      window.scrollTo(0, p.el.offsetTop + anchor.fraction * p.el.offsetHeight);
+    };
+
+    // ---- Loading a (new build of the) document ----
+    async function show(url) {
+      const token = ++generation;
+      let next;
+      try {
+        next = await pdfjsLib.getDocument({ url }).promise;
+      } catch (e) {
+        if (token === generation) showMessage('The PDF could not be opened: ' + (e && e.message || e));
+        return;
+      }
+      if (token !== generation) { next.destroy(); return; }
+      const previous = doc;
+      doc = next;
+      await layout(anchorNow());
+      if (previous) previous.destroy();
+    }
+
+    // Puts a box of the right size for every page (drawn when it comes into view) and goes back
+    // to where the reader was.
+    async function layout(anchor) {
+      const token = generation;
+      const width = Math.max(200, document.documentElement.clientWidth - 2 * sideMargin) * zoom;
+      const list = [];
+      for (let n = 1; n <= doc.numPages; n++) {
+        const page = await doc.getPage(n);
+        if (token !== generation) return;
+        const base = page.getViewport({ scale: 1 });
+        const scale = width / base.width;
+        const el = document.createElement('div');
+        el.className = 'page';
+        el.style.width = width + 'px';
+        el.style.height = Math.round(base.height * scale) + 'px';
+        el.style.setProperty('--scale-factor', scale);
+        list.push({ el, page, scale, rendered: false });
+      }
+      messageEl.style.display = 'none';
+      pagesEl.replaceChildren(...list.map(p => p.el));
+      pages = list;
+      scrollToAnchor(anchor);
+      for (const p of pages) observer.observe(p.el);
+      // The pages that are in view now must not wait for the observer's first pass.
+      pages.filter(p => inView(p.el)).forEach(render);
+    }
+
+    const inView = el => {
+      const r = el.getBoundingClientRect();
+      return r.bottom > -600 && r.top < window.innerHeight + 600;
+    };
+    const observer = new IntersectionObserver(entries => {
+      for (const e of entries) if (e.isIntersecting) render(pages.find(p => p.el === e.target));
+    }, { rootMargin: '600px 0px' });
+
+    async function render(p) {
+      if (!p || p.rendered) return;
+      p.rendered = true;
+      observer.unobserve(p.el);
+      const ratio = Math.min(window.devicePixelRatio || 1, 3);
+      const canvas = document.createElement('canvas');
+      const viewport = p.page.getViewport({ scale: p.scale * ratio });
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      canvas.style.width = p.el.style.width;
+      canvas.style.height = p.el.style.height;
+      const textDiv = document.createElement('div');
+      textDiv.className = 'textLayer';
+      p.el.replaceChildren(canvas, textDiv);
+      try {
+        await p.page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        // Invisible text over the drawing, so it can be selected and copied.
+        await new pdfjsLib.TextLayer({
+          textContentSource: p.page.streamTextContent(),
+          container: textDiv,
+          viewport: p.page.getViewport({ scale: p.scale }),
+        }).render();
+      } catch (e) { /* a page of a build that was replaced meanwhile */ }
+    }
+
+    // ---- Window size and zoom ----
+    let resizeTimer = 0;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { if (doc) layout(anchorNow()); }, 150);
+    });
+    const setZoom = value => {
+      zoom = Math.min(4, Math.max(0.4, value));
+      zoomEl.textContent = Math.round(zoom * 100) + '%';
+      zoomEl.style.opacity = 1;
+      clearTimeout(zoomTimer);
+      zoomTimer = setTimeout(() => zoomEl.style.opacity = 0, 900);
+      if (doc) layout(anchorNow());
+    };
+    window.addEventListener('wheel', e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setZoom(zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+    }, { passive: false });
+    window.addEventListener('keydown', e => {
+      if (!e.ctrlKey) return;
+      if (e.key === '0') { e.preventDefault(); setZoom(1); }
+      else if (e.key === '+' || e.key === '=') { e.preventDefault(); setZoom(zoom * 1.1); }
+      else if (e.key === '-') { e.preventDefault(); setZoom(zoom / 1.1); }
+    });
+
+    // Text selected with the mouse is copied as soon as the button is released.
+    document.addEventListener('mouseup', e => {
+      const text = e.button === 0 ? String(window.getSelection()) : '';
+      if (text) host.postMessage({ type: 'copy', text });
+    });
+
+    host.addEventListener('message', e => {
+      if (e.data && e.data.pdf) show(e.data.pdf);
+    });
+    host.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>

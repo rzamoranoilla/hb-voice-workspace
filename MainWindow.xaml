@@ -43,7 +43,9 @@
         </Style>
     </Window.Resources>
 
-    <Grid>
+    <!-- The side columns have fixed widths (the splitters change them); the middle one takes the rest.
+         RootGrid_SizeChanged narrows the side columns when the window becomes too narrow for all three. -->
+    <Grid x:Name="RootGrid" SizeChanged="RootGrid_SizeChanged">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="220" MinWidth="140" />
             <ColumnDefinition Width="5" />
@@ -53,7 +55,7 @@
         </Grid.ColumnDefinitions>
 
         <!-- Column 1: workspaces -->
-        <DockPanel Grid.Column="0" Margin="10,10,6,10">
+        <DockPanel x:Name="WorkspacesColumn" Grid.Column="0" Margin="10,10,6,10">
             <DockPanel DockPanel.Dock="Bottom" Margin="2,8,0,0">
                 <Button DockPanel.Dock="Right" Content="Log out" FontSize="11" Padding="8,3" Click="Logout_Click"
                         ToolTip="Close this session and log in as another user" />
@@ -63,10 +65,17 @@
             <DockPanel DockPanel.Dock="Top" Margin="2,0,0,8">
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="＋"
                         ToolTip="Open a folder as a workspace" Click="AddWorkspace_Click" />
+                <Image DockPanel.Dock="Left" Source="/Assets/logo.png" Width="18" Height="18" Margin="0,0,8,0"
+                       VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
                 <TextBlock Style="{StaticResource ColumnTitle}" Text="WORKSPACES" />
             </DockPanel>
+            <!-- Ctrl+F in this column: filters the list by name -->
+            <TextBox x:Name="WorkspaceFilterBox" DockPanel.Dock="Top" Visibility="Collapsed" Margin="2,0,0,8"
+                     Padding="6,3" FontSize="12" TextChanged="WorkspaceFilter_TextChanged"
+                     PreviewKeyDown="WorkspaceFilter_PreviewKeyDown"
+                     ToolTip="Part of a workspace name. Enter selects the first match, Esc clears and closes." />
             <Grid>
-                <ListBox x:Name="WorkspaceList" SelectionChanged="WorkspaceList_SelectionChanged"
+                <ListBox x:Name="WorkspaceList" ScrollViewer.CanContentScroll="False" SelectionChanged="WorkspaceList_SelectionChanged"
                          HorizontalContentAlignment="Stretch" Background="Transparent" BorderThickness="0">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
@@ -74,6 +83,19 @@
                                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="✕"
                                         FontSize="10" ToolTip="Close workspace (files are kept)"
                                         Click="RemoveWorkspace_Click" />
+                                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="⏹"
+                                        FontSize="10" Foreground="#E5484D"
+                                        ToolTip="Stop: release this workspace's terminals and preview (files are kept)"
+                                        Visibility="{Binding CanStop, Converter={StaticResource BoolToVisibility}}"
+                                        Click="StopWorkspace_Click" />
+                                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="▶"
+                                        FontSize="10" Foreground="#46A758"
+                                        ToolTip="Start: load this workspace's resources"
+                                        Visibility="{Binding CanStart, Converter={StaticResource BoolToVisibility}}"
+                                        Click="StartWorkspace_Click" />
+                                <Ellipse DockPanel.Dock="Left" Width="9" Height="9" Margin="2,0,8,0"
+                                         VerticalAlignment="Center" Fill="{Binding StateBrush}"
+                                         ToolTip="{Binding StateText}" />
                                 <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
                                            VerticalAlignment="Center" />
                             </DockPanel>
@@ -87,8 +109,27 @@
 
         <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#22FFFFFF" />
 
-        <!-- Column 2: PowerShell tabs -->
-        <DockPanel x:Name="TerminalColumn" Grid.Column="2">
+        <!-- Column 2: the workspace's environment (terminals or document editor), with a banner
+             while it is stopped and a loading overlay while its resources start -->
+        <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Border x:Name="StoppedBanner" Grid.Row="0" Background="#2A1A1B" BorderBrush="#5A2A2D" BorderThickness="0,0,0,1"
+                    Padding="12,8" Visibility="Collapsed">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="▶  Start" Padding="12,4" Click="StartCurrent_Click"
+                            ToolTip="Load this workspace's resources" />
+                    <Ellipse DockPanel.Dock="Left" Width="9" Height="9" Fill="#E5484D" Margin="0,0,10,0"
+                             VerticalAlignment="Center" />
+                    <TextBlock x:Name="StoppedBannerText" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0" />
+                </DockPanel>
+            </Border>
+
+            <Grid Grid.Row="1">
+        <DockPanel x:Name="TerminalColumn">
             <DockPanel DockPanel.Dock="Top" Margin="6,6,6,4" LastChildFill="False">
                 <Button x:Name="SshToggleButton" DockPanel.Dock="Right" FontSize="11" Padding="8,3"
                         VerticalAlignment="Center" Visibility="Collapsed" Click="SshToggle_Click" />
@@ -192,12 +233,64 @@
         </DockPanel>
 
         <!-- Column 2 for Markdown and LaTeX workspaces: file browser, editor and output -->
-        <documents:DocumentPane x:Name="DocPane" Grid.Column="2" Visibility="Collapsed" />
+        <documents:DocumentPane x:Name="DocPane" Visibility="Collapsed" />
+
+        <!-- Shown while the selected workspace loads its resources -->
+        <Grid x:Name="LoadingOverlay" Background="#161616" Visibility="Collapsed">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="320">
+                <Ellipse Width="46" Height="46" StrokeThickness="4" Stroke="#46A758" StrokeDashArray="22 40"
+                         StrokeDashCap="Round" RenderTransformOrigin="0.5,0.5" Margin="0,0,0,18">
+                    <Ellipse.RenderTransform>
+                        <RotateTransform />
+                    </Ellipse.RenderTransform>
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Style.Triggers>
+                                <Trigger Property="IsVisible" Value="True">
+                                    <Trigger.EnterActions>
+                                        <BeginStoryboard x:Name="Spin">
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.(RotateTransform.Angle)"
+                                                                 From="0" To="360" Duration="0:0:1" RepeatBehavior="Forever" />
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </Trigger.EnterActions>
+                                    <Trigger.ExitActions>
+                                        <StopStoryboard BeginStoryboardName="Spin" />
+                                    </Trigger.ExitActions>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+                <TextBlock x:Name="LoadingTitle" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                <TextBlock x:Name="LoadingStatus" FontSize="12" Opacity="0.7" HorizontalAlignment="Center"
+                           TextWrapping="Wrap" TextAlignment="Center" Margin="0,6,0,0" />
+            </StackPanel>
+        </Grid>
+            </Grid>
+        </Grid>
 
         <GridSplitter Grid.Column="3" HorizontalAlignment="Stretch" Background="#22FFFFFF" />
 
-        <!-- Column 3: transcriber -->
-        <DockPanel Grid.Column="4" Margin="10">
+        <!-- Column 3: transcriber, with a terminal underneath when a document workspace asks for one -->
+        <Grid Grid.Column="4">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" MinHeight="200" />
+                <RowDefinition x:Name="SideTerminalSplitterRow" Height="0" />
+                <RowDefinition x:Name="SideTerminalRow" Height="0" />
+            </Grid.RowDefinitions>
+            <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" Background="#22FFFFFF" />
+            <DockPanel x:Name="SideTerminalPanel" Grid.Row="2" Margin="10,0,10,10" Visibility="Collapsed">
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="✕" FontSize="10"
+                            ToolTip="Close the terminal" Click="SideTerminalClose_Click" />
+                    <TextBlock Style="{StaticResource ColumnTitle}" Text="POWERSHELL" />
+                </DockPanel>
+                <Grid x:Name="SideTerminalHost" Background="#0C0C0C" />
+            </DockPanel>
+
+        <DockPanel Grid.Row="0" Margin="10">
             <TextBlock DockPanel.Dock="Top" Style="{StaticResource ColumnTitle}" Text="READ ALOUD" Margin="0,0,0,8" />
 
             <TextBox x:Name="ReadAloudBox" DockPanel.Dock="Top" Height="96" AcceptsReturn="True"
@@ -299,5 +392,6 @@
                 </ItemsControl>
             </ScrollViewer>
         </DockPanel>
+        </Grid>
     </Grid>
 </Window>

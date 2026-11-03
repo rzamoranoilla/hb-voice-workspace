@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Navigation;
 
 namespace HB;
 
@@ -31,5 +32,11 @@ public partial class LoginWindow : Window
         }
         Session = session;
         DialogResult = true;
+    }
+
+    private void Zamoilla_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        Zamoilla.OpenSite();
+        e.Handled = true;
     }
 }

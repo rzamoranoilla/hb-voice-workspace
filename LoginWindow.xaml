@@ -4,7 +4,14 @@
         Title="HB Voice Workspace" Width="380" SizeToContent="Height" ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen">
     <StackPanel Margin="24">
-        <TextBlock Text="Log in" FontSize="20" FontWeight="SemiBold" />
+        <DockPanel Margin="0,0,0,4">
+            <Image DockPanel.Dock="Left" Source="/Assets/logo.png" Width="44" Height="44" Margin="0,0,14,0"
+                   RenderOptions.BitmapScalingMode="HighQuality" />
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="HB Voice Workspace" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock Text="Log in" FontSize="12" Opacity="0.7" />
+            </StackPanel>
+        </DockPanel>
         <TextBlock x:Name="IntroText" FontSize="12" Opacity="0.7" Margin="0,4,0,16" TextWrapping="Wrap"
                    Text="Your workspaces, tab names and saved connections open with your user." />
 
@@ -21,5 +28,10 @@
                 Click="Login_Click" />
         <Button Content="Create new user" HorizontalAlignment="Stretch" Padding="0,8" Margin="0,8,0,0"
                 Click="Create_Click" />
+        <TextBlock HorizontalAlignment="Center" Margin="0,18,0,0" FontSize="11" Opacity="0.75">
+            Powered by
+            <Hyperlink NavigateUri="https://raul.zamoilla.cl" RequestNavigate="Zamoilla_RequestNavigate"
+                       ToolTip="https://raul.zamoilla.cl">Zamoilla</Hyperlink>
+        </TextBlock>
     </StackPanel>
 </Window>

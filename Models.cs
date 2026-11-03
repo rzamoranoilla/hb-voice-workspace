@@ -56,6 +56,9 @@ public sealed class WorkspaceOptions
     /// <summary>LaTeX template: the document that is compiled while a file it includes is being edited.</summary>
     public string? LatexMainFile { get; set; }
 
+    /// <summary>Markdown and LaTeX templates: a PowerShell terminal is open under the transcriber.</summary>
+    public bool DocumentTerminalOpen { get; set; }
+
     /// <summary>Names of the terminal tabs, restored when the workspace is opened again.</summary>
     public List<string> Tabs { get; set; } = new();
 }
@@ -81,13 +84,62 @@ public sealed class SshConnection
 }
 
 /// <summary>A folder the user works in: it owns its terminals and its transcription file.</summary>
-public sealed class Workspace
+/// <summary>Whether a workspace's resources (terminals, editor, preview) are loaded.</summary>
+public enum WorkspaceState { Stopped, Starting, Running }
+
+public sealed class Workspace : INotifyPropertyChanged
 {
+    private static readonly System.Windows.Media.Brush StoppedBrush = Frozen("#E5484D");
+    private static readonly System.Windows.Media.Brush StartingBrush = Frozen("#F5A524");
+    private static readonly System.Windows.Media.Brush RunningBrush = Frozen("#46A758");
+
+    private WorkspaceState _state;
+
     public Workspace(string path, WorkspaceOptions? options = null)
     {
         Path = path;
         Name = new DirectoryInfo(path).Name;
         Options = options ?? new WorkspaceOptions();
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>Stopped until the user opens it; its resources are released again with the stop button.</summary>
+    public WorkspaceState State
+    {
+        get => _state;
+        set
+        {
+            if (_state == value) return;
+            _state = value;
+            foreach (var name in new[] { nameof(State), nameof(StateBrush), nameof(StateText), nameof(CanStart), nameof(CanStop) })
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
+
+    public System.Windows.Media.Brush StateBrush => _state switch
+    {
+        WorkspaceState.Running => RunningBrush,
+        WorkspaceState.Starting => StartingBrush,
+        _ => StoppedBrush,
+    };
+
+    public string StateText => _state switch
+    {
+        WorkspaceState.Running => "Running — its resources are loaded",
+        WorkspaceState.Starting => "Starting — loading its resources",
+        _ => "Stopped — no resources in use; the files are kept",
+    };
+
+    public bool CanStart => _state == WorkspaceState.Stopped;
+    public bool CanStop => _state != WorkspaceState.Stopped;
+
+    private static System.Windows.Media.Brush Frozen(string color)
+    {
+        var brush = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color));
+        brush.Freeze();
+        return brush;
     }
 
     public string Name { get; }
@@ -105,6 +157,9 @@ public sealed class Workspace
     public ObservableCollection<TerminalTab> Tabs { get; } = new();
     public TerminalTab? SelectedTab { get; set; }
     public int TabCounter { get; set; }
+
+    /// <summary>Document templates: the terminal shown under the transcriber, once it has been opened.</summary>
+    public TerminalView? SideTerminal { get; set; }
 
     public ObservableCollection<TranscriptEntry> Entries { get; } = new();
     public bool EntriesLoaded { get; set; }
@@ -238,6 +293,11 @@ public sealed class AppSettings
     public string? Language { get; set; }
     public string Model { get; set; } = "base";
     public string? Voice { get; set; }
+
+    /// <summary>Size of the window when not maximized, and whether it was maximized; 0 = never saved.</summary>
+    public double WindowWidth { get; set; }
+    public double WindowHeight { get; set; }
+    public bool WindowMaximized { get; set; }
 
     /// <summary>Loads the settings of one user; they are saved back to the same file.</summary>
     public static AppSettings Load(string filePath)

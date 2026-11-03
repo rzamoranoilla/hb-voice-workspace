@@ -12,6 +12,15 @@
     <!-- Self-contained so the app runs without a machine-wide .NET runtime -->
     <SelfContained>true</SelfContained>
     <AssemblyTitle>HB Voice Workspace</AssemblyTitle>
+    <!-- Icon of the exe, and so of every window and the taskbar button (built from Assets\logo.png) -->
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>HB Voice Workspace</Product>
+    <Company>Zamoilla</Company>
+    <Authors>Raul Zamorano-Illanes</Authors>
+    <Copyright>Copyright 2026 Zamoilla</Copyright>
+    <!-- English .NET resources only: the other languages would add 13 folders to the install -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>

@@ -13,6 +13,7 @@ namespace HB.Terminal;
 public sealed class TerminalView : ContentControl, IDisposable
 {
     private const string FocusMessage = "\0focus";
+    private const string RefitMessage = "\0refit";
 
     private readonly WebView2 _web = new();
     private readonly string _workingDirectory;
@@ -22,8 +23,13 @@ public sealed class TerminalView : ContentControl, IDisposable
     private DateTime _sshPasswordDeadline;
     private string _recentOutput = "";
 
+    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>Raised on the UI thread when the shell process ends on its own.</summary>
     public event Action? Exited;
+
+    /// <summary>Completes once the shell is running (or could not start — the terminal then says why).</summary>
+    public Task Ready => _ready.Task;
 
     public TerminalView(string workingDirectory)
     {
@@ -31,6 +37,23 @@ public sealed class TerminalView : ContentControl, IDisposable
         _web.DefaultBackgroundColor = System.Drawing.Color.FromArgb(12, 12, 12);
         Content = _web;
         Loaded += OnLoaded;
+        // The page fits its grid to the control by itself, but a terminal that is created hidden,
+        // shown later, or resized while hidden can miss that: tell it on each of those events.
+        SizeChanged += (_, _) => RequestRefit();
+        IsVisibleChanged += (_, args) => { if (args.NewValue is true) RequestRefit(); };
+    }
+
+    /// <summary>The window moved to a screen with another scale: the cells change size.</summary>
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        RequestRefit();
+    }
+
+    /// <summary>Asks the page to fit the grid to the control again and tell the shell its size.</summary>
+    private void RequestRefit()
+    {
+        if (!_disposed) _web.CoreWebView2?.PostWebMessageAsString(RefitMessage);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -58,6 +81,7 @@ public sealed class TerminalView : ContentControl, IDisposable
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(16),
             };
+            _ready.TrySetResult();
         }
     }
 
@@ -142,10 +166,12 @@ public sealed class TerminalView : ContentControl, IDisposable
                 AnswerPasswordPrompt(text);
             });
             _console.Exited += () => Dispatcher.BeginInvoke(() => Exited?.Invoke());
+            _ready.TrySetResult();
         }
         catch (Exception ex)
         {
             _web.CoreWebView2.PostWebMessageAsString("Could not start PowerShell: " + ex.Message);
+            _ready.TrySetResult();
         }
     }
 
@@ -176,6 +202,7 @@ public sealed class TerminalView : ContentControl, IDisposable
         if (_disposed) return;
         _disposed = true;
         _console?.Dispose();
+        _ready.TrySetResult();
         _web.Dispose();
     }
 }

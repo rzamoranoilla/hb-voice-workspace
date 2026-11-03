@@ -5,6 +5,8 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Media;
 using System.Windows.Input;
 using System.Windows.Threading;
 using HB.Speech;
@@ -34,9 +36,11 @@ public partial class MainWindow : Window
 
         _session = session;
         _settings = AppSettings.Load(session.SettingsPath);
+        ApplyWindowPlacement();
         _connections = new ObservableCollection<SshConnection>(_settings.SshConnections);
         SshSavedBox.ItemsSource = _connections;
         DocPane.StateChanged += SaveSettings;
+        DocPane.TerminalToggleRequested += ToggleSideTerminal;
         UserText.Text = session.Name;
         Title = "HB Voice Workspace — " + session.Name;
 
@@ -120,7 +124,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        foreach (var tab in workspace.Tabs.ToList()) CloseTab(workspace, tab);
+        StopWorkspace(workspace);
         _workspaces.Remove(workspace);
         if (Current == null) WorkspaceList.SelectedItem = _workspaces.FirstOrDefault();
         ShowWorkspace();
@@ -131,6 +135,147 @@ public partial class MainWindow : Window
     {
         if (_loading) return;
         ShowWorkspace();
+        SaveSettings();
+    }
+
+    // ---- Ctrl+F: find where the focus is ----
+
+    /// <summary>
+    /// Ctrl+F opens the search of the area that has the focus: the workspace filter in the left
+    /// column, the file filter in the file browser, the find bar in the editor. With the focus
+    /// elsewhere (a terminal has its own keys) it goes to the editor if there is one, else the list.
+    /// </summary>
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (e.Handled || e.Key != Key.F || Keyboard.Modifiers != ModifierKeys.Control) return;
+        var focused = Keyboard.FocusedElement as Visual;
+        if (focused != null && WorkspacesColumn.IsAncestorOf(focused)) ShowWorkspaceFilter();
+        else if (DocPane.IsVisible) DocPane.ShowFindFor(focused);
+        else ShowWorkspaceFilter();
+        e.Handled = true;
+    }
+
+    private void ShowWorkspaceFilter()
+    {
+        WorkspaceFilterBox.Visibility = Visibility.Visible;
+        WorkspaceFilterBox.Focus();
+        WorkspaceFilterBox.SelectAll();
+    }
+
+    private void CloseWorkspaceFilter()
+    {
+        WorkspaceFilterBox.Text = "";
+        WorkspaceFilterBox.Visibility = Visibility.Collapsed;
+        WorkspaceList.Focus();
+    }
+
+    private void WorkspaceFilter_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var text = WorkspaceFilterBox.Text.Trim();
+        var selected = Current; // stays in the list whatever the filter, so nothing changes under the user
+        CollectionViewSource.GetDefaultView(_workspaces).Filter = text.Length == 0
+            ? null
+            : item => item == selected || item is Workspace w && w.Name.Contains(text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void WorkspaceFilter_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Escape:
+                CloseWorkspaceFilter();
+                break;
+            case Key.Enter or Key.Down:
+                var first = CollectionViewSource.GetDefaultView(_workspaces).Cast<Workspace>()
+                    .FirstOrDefault(w => w.Name.Contains(WorkspaceFilterBox.Text.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (first != null) WorkspaceList.SelectedItem = first;
+                if (e.Key == Key.Enter) WorkspaceList.Focus();
+                break;
+            default:
+                return;
+        }
+        e.Handled = true;
+    }
+
+    // ---- Workspace resources: started with the ▶ buttons, released with the stop button ----
+
+    private void StartCurrentIfStopped()
+    {
+        if (Current is { State: WorkspaceState.Stopped } workspace) _ = StartWorkspaceAsync(workspace);
+    }
+
+    private void StartCurrent_Click(object sender, RoutedEventArgs e) => StartCurrentIfStopped();
+
+    private void StartWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)sender).DataContext is not Workspace workspace) return;
+        // The ▶ in the list both selects the workspace and starts it; a plain click only selects.
+        if (Current != workspace) WorkspaceList.SelectedItem = workspace;
+        StartCurrentIfStopped();
+    }
+
+    private void StopWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)sender).DataContext is Workspace workspace) StopWorkspace(workspace);
+    }
+
+    /// <summary>
+    /// Loads the resources of the selected workspace — its terminals, or the editor with its preview
+    /// — behind the loading overlay, which stays until they report ready (or a timeout).
+    /// </summary>
+    private async Task StartWorkspaceAsync(Workspace workspace)
+    {
+        if (workspace.State != WorkspaceState.Stopped || workspace != Current) return;
+        workspace.State = WorkspaceState.Starting;
+        LoadingTitle.Text = $"Starting {workspace.Name}";
+        LoadingStatus.Text = workspace.IsDocument ? "Loading the editor and the preview…" : "Starting PowerShell…";
+        ShowWorkspace(); // creates the terminals / shows the editor, under the overlay
+
+        var minimum = Task.Delay(700); // long enough for the spinner to read as a loading step
+        var ready = workspace.IsDocument
+            ? Task.WhenAll(DocPane.WhenReadyAsync(), workspace.SideTerminal?.Ready ?? Task.CompletedTask)
+            : Task.WhenAll(workspace.Tabs.Select(t => t.View.Ready));
+        if (workspace.IsSsh) LoadingStatus.Text = "Starting PowerShell for the SSH session…";
+        try { await Task.WhenAll(ready, minimum).WaitAsync(TimeSpan.FromSeconds(20)); }
+        catch (TimeoutException) { } // the component shows its own error; the overlay must not stay forever
+
+        if (workspace.State != WorkspaceState.Starting) return; // stopped meanwhile
+        workspace.State = WorkspaceState.Running;
+        if (workspace == Current) ShowWorkspace();
+    }
+
+    /// <summary>
+    /// Releases what the workspace is using: its shells, side terminal and preview window. The
+    /// files and the tab names are kept, so starting it again brings the environment back.
+    /// </summary>
+    private void StopWorkspace(Workspace workspace)
+    {
+        if (workspace.State == WorkspaceState.Stopped) return;
+        if (workspace == _recordingWorkspace)
+        {
+            StatusText.Text = "Stop the dictation before stopping this workspace.";
+            return;
+        }
+
+        if (workspace.TabsRestored)
+        {
+            workspace.Options.Tabs = workspace.Tabs.Select(t => t.Title).ToList();
+            workspace.TabsRestored = false;
+        }
+        foreach (var tab in workspace.Tabs.ToList())
+        {
+            TerminalHost.Children.Remove(tab.View);
+            tab.View.Dispose();
+        }
+        workspace.Tabs.Clear();
+        workspace.SelectedTab = null;
+        workspace.TabCounter = 0;
+        RemoveSideTerminal(workspace);
+        if (workspace == Current && workspace.IsDocument) DocPane.FlushSave();
+
+        workspace.State = WorkspaceState.Stopped;
+        if (workspace == Current) ShowWorkspace();
         SaveSettings();
     }
 
@@ -177,28 +322,38 @@ public partial class MainWindow : Window
             SshStatus.Text = "";
         }
 
+        // A stopped workspace shows its files but holds no resources; a starting one shows the loading overlay.
+        bool stopped = workspace?.State == WorkspaceState.Stopped;
+        StoppedBanner.Visibility = stopped ? Visibility.Visible : Visibility.Collapsed;
+        if (stopped)
+            StoppedBannerText.Text = $"{workspace!.Name} is stopped: no terminal, preview or compiler is running for it. " +
+                                     "Its files are untouched. Press ▶ Start to work in it.";
+        LoadingOverlay.Visibility = workspace?.State == WorkspaceState.Starting ? Visibility.Visible : Visibility.Collapsed;
+
         // Markdown and LaTeX workspaces replace the terminals with the document editor.
         bool isDocument = workspace?.IsDocument == true;
-        TerminalColumn.Visibility = isDocument ? Visibility.Collapsed : Visibility.Visible;
+        TerminalColumn.Visibility = isDocument || stopped ? Visibility.Collapsed : Visibility.Visible;
         DocPane.Visibility = isDocument ? Visibility.Visible : Visibility.Collapsed;
+        UpdateSideTerminal();
         if (isDocument)
         {
             TabStrip.ItemsSource = null;
             ShowSelectedTerminal();
+            DocPane.SetStopped(stopped);
             DocPane.Show(workspace!);
             return;
         }
         DocPane.Leave();
 
-        if (workspace != null && !workspace.TabsRestored)
+        if (workspace != null && !stopped && !workspace.TabsRestored)
         {
             workspace.TabsRestored = true;
             foreach (var title in workspace.Options.Tabs) AddTab(workspace, title);
             workspace.TabCounter = workspace.Tabs.Count;
             workspace.SelectedTab = workspace.Tabs.FirstOrDefault();
         }
-        if (workspace != null && workspace.Tabs.Count == 0) AddTab(workspace);
-        TabStrip.ItemsSource = workspace?.Tabs;
+        if (workspace != null && !stopped && workspace.Tabs.Count == 0) AddTab(workspace);
+        TabStrip.ItemsSource = stopped ? null : workspace?.Tabs;
         TabStrip.SelectedItem = workspace?.SelectedTab;
         ShowSelectedTerminal();
     }
@@ -311,6 +466,70 @@ public partial class MainWindow : Window
         foreach (TerminalView view in TerminalHost.Children)
             view.Visibility = view == selected ? Visibility.Visible : Visibility.Collapsed;
         selected?.FocusTerminal();
+    }
+
+    // ---- Terminal under the transcriber (Markdown and LaTeX workspaces) ----
+
+    private void ToggleSideTerminal()
+    {
+        if (Current is not { IsDocument: true } workspace) return;
+        workspace.Options.DocumentTerminalOpen = !workspace.Options.DocumentTerminalOpen;
+        UpdateSideTerminal();
+        SaveSettings();
+    }
+
+    private void SideTerminalClose_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current?.Options.DocumentTerminalOpen == true) ToggleSideTerminal();
+    }
+
+    /// <summary>
+    /// Shows the current document workspace's terminal under the transcriber when it asked for one,
+    /// starting it the first time; in every other case the transcriber has the whole column.
+    /// </summary>
+    private void UpdateSideTerminal()
+    {
+        var workspace = Current;
+        bool open = workspace is { IsDocument: true } && workspace.State != WorkspaceState.Stopped &&
+                    workspace.Options.DocumentTerminalOpen;
+        if (open && workspace!.SideTerminal == null)
+        {
+            var view = new TerminalView(workspace.Path);
+            view.Exited += () =>
+            {
+                // The shell was closed from inside (exit): the panel goes away with it.
+                if (_closing) return;
+                RemoveSideTerminal(workspace);
+                if (workspace == Current)
+                {
+                    workspace.Options.DocumentTerminalOpen = false;
+                    UpdateSideTerminal();
+                    SaveSettings();
+                }
+            };
+            workspace.SideTerminal = view;
+            SideTerminalHost.Children.Add(view);
+        }
+
+        foreach (TerminalView view in SideTerminalHost.Children)
+            view.Visibility = open && view == workspace!.SideTerminal ? Visibility.Visible : Visibility.Collapsed;
+
+        bool wasOpen = SideTerminalPanel.Visibility == Visibility.Visible;
+        SideTerminalPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        SideTerminalSplitterRow.Height = new GridLength(open ? 5 : 0);
+        if (open && !wasOpen) SideTerminalRow.Height = new GridLength(1, GridUnitType.Star);
+        else if (!open) SideTerminalRow.Height = new GridLength(0);
+
+        DocPane.SetTerminalOpen(open);
+        if (open) workspace!.SideTerminal!.FocusTerminal();
+    }
+
+    private void RemoveSideTerminal(Workspace workspace)
+    {
+        if (workspace.SideTerminal is not { } view) return;
+        workspace.SideTerminal = null;
+        SideTerminalHost.Children.Remove(view);
+        view.Dispose();
     }
 
     // ---- SSH template ----
@@ -716,8 +935,62 @@ public partial class MainWindow : Window
 
     // ---- Settings ----
 
+    // ---- Window and column sizes ----
+
+    /// <summary>Opens the window at its last size, but never larger than the screen it opens on.</summary>
+    private void ApplyWindowPlacement()
+    {
+        var area = SystemParameters.WorkArea;
+        if (_settings.WindowWidth >= MinWidth && _settings.WindowHeight >= MinHeight)
+        {
+            Width = _settings.WindowWidth;
+            Height = _settings.WindowHeight;
+        }
+        Width = Math.Min(Width, area.Width);
+        Height = Math.Min(Height, area.Height);
+        // A window that (almost) fills the screen is better maximized: no part of it can end up
+        // off the screen when the screen or its scale changes.
+        if (_settings.WindowMaximized || Width >= area.Width - 40 || Height >= area.Height - 40)
+            WindowState = WindowState.Maximized;
+    }
+
+    /// <summary>
+    /// When the window becomes narrower than the three columns together, the side columns give
+    /// way (down to their minimum) instead of the layout running past the edge of the window.
+    /// </summary>
+    private void RootGrid_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!e.WidthChanged) return;
+        var columns = RootGrid.ColumnDefinitions;
+        var left = columns[0];
+        var middle = columns[2];
+        var right = columns[4];
+        if (!left.Width.IsAbsolute || !right.Width.IsAbsolute) return;
+
+        double splitters = columns[1].Width.Value + columns[3].Width.Value;
+        double excess = left.Width.Value + right.Width.Value + splitters + middle.MinWidth - e.NewSize.Width;
+        if (excess <= 0) return;
+
+        double cut = Math.Min(excess, right.Width.Value - right.MinWidth);
+        if (cut > 0)
+        {
+            right.Width = new GridLength(right.Width.Value - cut);
+            excess -= cut;
+        }
+        cut = Math.Min(excess, left.Width.Value - left.MinWidth);
+        if (cut > 0) left.Width = new GridLength(left.Width.Value - cut);
+    }
+
     private void SaveSettings()
     {
+        var bounds = RestoreBounds; // the normal (not maximized) size of the window
+        if (!bounds.IsEmpty)
+        {
+            _settings.WindowWidth = bounds.Width;
+            _settings.WindowHeight = bounds.Height;
+        }
+        _settings.WindowMaximized = WindowState == WindowState.Maximized;
+
         // Workspaces not shown yet in this session keep the tab names they were saved with.
         foreach (var workspace in _workspaces.Where(w => w.TabsRestored))
             workspace.Options.Tabs = workspace.Tabs.Select(t => t.Title).ToList();
@@ -740,6 +1013,7 @@ public partial class MainWindow : Window
         _transcriber.Dispose();
         _speaker.Dispose();
         foreach (var tab in _workspaces.SelectMany(w => w.Tabs)) tab.View.Dispose();
+        foreach (var workspace in _workspaces) workspace.SideTerminal?.Dispose();
         base.OnClosing(e);
     }
 }

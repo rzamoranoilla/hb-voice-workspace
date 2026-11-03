@@ -17,8 +17,12 @@ namespace HB.Documents;
 public sealed class PreviewView : ContentControl, IDisposable
 {
     private const string HtmlPage = "https://hb.assets/preview.html";
+    private const string PdfPage = "https://hb.assets/pdf.html";
     private const string DocumentHost = "hb.docs";
     private const string PdfHost = "hb.preview";
+
+    /// <summary>The pages of the preview: one shows HTML, the other draws PDFs (with pdf.js).</summary>
+    private enum Page { None, Html, Pdf }
 
     /// <summary>PDFs are shown from copies kept here, so the compiler can always overwrite its output.</summary>
     public static string PdfFolder { get; } =
@@ -26,12 +30,17 @@ public sealed class PreviewView : ContentControl, IDisposable
 
     private readonly WebView2 _web = new();
     private CoreWebView2Environment? _environment;
+    private readonly TaskCompletionSource _readyTask = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _ready;
-    private bool _onHtmlPage;
-    private bool _loadingHtmlPage;
+    private bool _disposed;
+    private Page _page;        // the page that is loaded
+    private Page _loadingPage; // the page being navigated to, if any
     private string _html = "";
     private string? _documentFolder;
     private string? _pdf;
+
+    /// <summary>Completes once the browser engine is up and the preview page is loaded (or failed to).</summary>
+    public Task Ready => _readyTask.Task;
 
     public PreviewView()
     {
@@ -65,6 +74,7 @@ public sealed class PreviewView : ContentControl, IDisposable
         {
             _environment = await WebViewEnvironment.GetAsync();
             await _web.EnsureCoreWebView2Async(_environment);
+            if (_disposed) return; // closed while the browser was starting
             var core = _web.CoreWebView2;
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
@@ -95,30 +105,33 @@ public sealed class PreviewView : ContentControl, IDisposable
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(16),
             };
+            _readyTask.TrySetResult();
         }
     }
 
     private void Apply()
     {
-        if (!_ready) return;
-        var core = _web.CoreWebView2;
+        // A view that was disposed (its window closed, its workspace stopped) can still be asked
+        // to show something by work that was already under way, e.g. a compile that finishes.
+        if (!_ready || _disposed || _web.CoreWebView2 is not { } core) return;
 
-        if (_pdf != null)
-        {
-            _onHtmlPage = _loadingHtmlPage = false;
-            core.Navigate($"https://{PdfHost}/{Uri.EscapeDataString(Path.GetFileName(_pdf))}");
-            return;
-        }
-
-        if (!_onHtmlPage)
+        var wanted = _pdf != null ? Page.Pdf : Page.Html;
+        if (_page != wanted)
         {
             // The content is posted when the page has loaded.
-            if (!_loadingHtmlPage) core.Navigate(HtmlPage);
-            _loadingHtmlPage = true;
+            if (_loadingPage != wanted)
+            {
+                _loadingPage = wanted;
+                core.Navigate(wanted == Page.Pdf ? PdfPage : HtmlPage);
+            }
             return;
         }
 
-        core.PostWebMessageAsJson(JsonSerializer.Serialize(new { html = _html }));
+        if (_pdf != null)
+            core.PostWebMessageAsJson(JsonSerializer.Serialize(
+                new { pdf = $"https://{PdfHost}/{Uri.EscapeDataString(Path.GetFileName(_pdf))}" }));
+        else
+            core.PostWebMessageAsJson(JsonSerializer.Serialize(new { html = _html }));
     }
 
     /// <summary>The page sends the text the user selected with the mouse, to be copied.</summary>
@@ -159,14 +172,23 @@ public sealed class PreviewView : ContentControl, IDisposable
         }
     }
 
+    /// <summary>
+    /// The preview URL of a file on disk: the whole path in one percent-encoded segment, which
+    /// <see cref="ResolveDocumentFile"/> takes back as is (also for ../ and UNC paths).
+    /// </summary>
+    public static string UrlOf(string path) => $"https://{DocumentHost}/{Uri.EscapeDataString(path)}";
+
     private string? ResolveDocumentFile(string uri)
     {
-        if (_documentFolder == null || !Uri.TryCreate(uri, UriKind.Absolute, out var parsed)) return null;
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed)) return null;
         var relative = Uri.UnescapeDataString(parsed.AbsolutePath).TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
         if (relative.Length == 0) return null;
         try
         {
-            var path = Path.GetFullPath(Path.Combine(_documentFolder, relative));
+            string path;
+            if (Path.IsPathRooted(relative)) path = Path.GetFullPath(relative);
+            else if (_documentFolder != null) path = Path.GetFullPath(Path.Combine(_documentFolder, relative));
+            else return null;
             return File.Exists(path) ? path : null;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
@@ -199,9 +221,10 @@ public sealed class PreviewView : ContentControl, IDisposable
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (!_loadingHtmlPage) return;
-        _loadingHtmlPage = false;
-        _onHtmlPage = true;
+        if (_loadingPage == Page.None) return;
+        _page = _loadingPage;
+        _loadingPage = Page.None;
+        _readyTask.TrySetResult();
         Apply();
     }
 
@@ -209,7 +232,7 @@ public sealed class PreviewView : ContentControl, IDisposable
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (e.Uri.StartsWith(HtmlPage, StringComparison.OrdinalIgnoreCase) ||
-            e.Uri.StartsWith($"https://{PdfHost}/", StringComparison.OrdinalIgnoreCase))
+            e.Uri.StartsWith(PdfPage, StringComparison.OrdinalIgnoreCase))
             return;
         e.Cancel = true;
         OpenInBrowser(e.Uri);
@@ -223,7 +246,14 @@ public sealed class PreviewView : ContentControl, IDisposable
         catch (System.ComponentModel.Win32Exception) { }
     }
 
-    public void Dispose() => _web.Dispose();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _ready = false;
+        _readyTask.TrySetResult();
+        _web.Dispose();
+    }
 }
 
 /// <summary>A separate window for the preview, e.g. to keep it on another screen.</summary>

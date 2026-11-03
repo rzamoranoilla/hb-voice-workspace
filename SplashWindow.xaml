@@ -1,0 +1,53 @@
+<Window x:Class="HB.SplashWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HB Voice Workspace" Width="620" Height="340" WindowStyle="None" ResizeMode="NoResize"
+        AllowsTransparency="True" Background="Transparent" WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True" Topmost="True">
+    <Border Background="#141414" BorderBrush="#2A2A2A" BorderThickness="1" CornerRadius="4">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="230" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: the logo on a dark green panel, and who makes the program -->
+            <Border Grid.Column="0" Background="#0F2A17" CornerRadius="4,0,0,4">
+                <Grid>
+                    <Image Source="/Assets/logo.png" Width="150" Height="150" RenderOptions.BitmapScalingMode="HighQuality"
+                           Margin="0,0,0,24" />
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,18" FontSize="12"
+                               Foreground="#8FBF8F">
+                        Powered by
+                        <Hyperlink NavigateUri="https://raul.zamoilla.cl" RequestNavigate="Zamoilla_RequestNavigate"
+                                   Foreground="#CDEBCD" FontWeight="SemiBold" ToolTip="https://raul.zamoilla.cl">Zamoilla</Hyperlink>
+                    </TextBlock>
+                </Grid>
+            </Border>
+
+            <!-- Right: name, version and what is being loaded -->
+            <Grid Grid.Column="1" Margin="30,28,30,24">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="HB" FontSize="42" FontWeight="Light" Foreground="#F2F2F2"
+                           LineHeight="44" />
+                <TextBlock Grid.Row="1" Text="Voice Workspace" FontSize="20" FontWeight="SemiBold" Foreground="#9DCC9D"
+                           Margin="0,-2,0,0" />
+                <TextBlock Grid.Row="2" x:Name="VersionText" FontSize="12" Foreground="#8A8A8A" Margin="0,10,0,0" />
+
+                <TextBlock Grid.Row="3" x:Name="StatusText" FontSize="12" Foreground="#CFCFCF" Margin="0,0,0,8"
+                           Text="Starting…" TextTrimming="CharacterEllipsis" />
+                <ProgressBar Grid.Row="4" x:Name="Progress" Height="4" Minimum="0" Maximum="1" Foreground="#46A758"
+                             Background="#262626" BorderThickness="0" />
+                <TextBlock Grid.Row="5" FontSize="10" Foreground="#6A6A6A" Margin="0,14,0,0" TextWrapping="Wrap"
+                           Text="Speech recognition by Whisper.net · Audio by NAudio and Concentus · Markdown by Markdig · MathJax, xterm.js, pdf.js and Microsoft WebView2" />
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

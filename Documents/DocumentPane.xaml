@@ -2,6 +2,37 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HB.Documents">
+    <UserControl.Resources>
+        <!-- A small on/off switch: label on the left, track with a knob on the right -->
+        <Style x:Key="Switch" TargetType="ToggleButton">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <StackPanel Orientation="Horizontal" Background="Transparent">
+                            <ContentPresenter VerticalAlignment="Center" Margin="0,0,7,0"
+                                              TextElement.FontSize="11" Opacity="0.85" />
+                            <Border x:Name="Track" Width="32" Height="16" CornerRadius="8" Background="#4A4A4A"
+                                    VerticalAlignment="Center">
+                                <Ellipse x:Name="Knob" Width="12" Height="12" Fill="#DDDDDD"
+                                         HorizontalAlignment="Left" Margin="2,0" />
+                            </Border>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Track" Property="Background" Value="#46A758" />
+                                <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right" />
+                                <Setter TargetName="Knob" Property="Fill" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Track" Property="Opacity" Value="0.8" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
     <DockPanel>
         <!-- Current file and the buttons that rearrange the column -->
         <DockPanel DockPanel.Dock="Top" Margin="8,8,8,6">
@@ -10,9 +41,16 @@
             <Button x:Name="PopOutButton" DockPanel.Dock="Right" FontSize="11" Padding="8,3" Margin="0,0,8,0"
                     VerticalAlignment="Center" Click="PopOut_Click"
                     ToolTip="Show the output in its own window, or bring it back here" />
+            <Button x:Name="TerminalButton" DockPanel.Dock="Right" FontSize="11" Padding="8,3" Margin="0,0,8,0"
+                    VerticalAlignment="Center" Click="Terminal_Click"
+                    ToolTip="Open a PowerShell terminal in this folder, under the transcriber" />
             <Button x:Name="CompileButton" DockPanel.Dock="Right" FontSize="11" Padding="8,3" Margin="0,0,8,0"
                     VerticalAlignment="Center" Content="Compile" Click="Compile_Click"
                     ToolTip="Build the PDF now (it is also built automatically after each change)" />
+            <ToggleButton x:Name="GrammarToggle" DockPanel.Dock="Right" Style="{StaticResource Switch}"
+                          Content="Grammarly" Margin="0,0,14,0" VerticalAlignment="Center"
+                          Checked="GrammarToggle_Changed" Unchecked="GrammarToggle_Changed"
+                          ToolTip="Off: Grammarly and other writing assistants cannot see the editor, so you write undisturbed.&#10;On: they can check the text." />
             <TextBlock x:Name="StatusText" DockPanel.Dock="Right" FontSize="11" Opacity="0.6"
                        VerticalAlignment="Center" Margin="12,0" />
             <TextBlock x:Name="FileNameText" FontWeight="SemiBold" VerticalAlignment="Center"
@@ -22,37 +60,61 @@
         <!-- File browser -->
         <DockPanel x:Name="BrowserPanel" DockPanel.Dock="Top" Height="230" Margin="8,0,8,8">
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
-                <Button Content="New file…" Click="NewFile_Click" ToolTip="Create a file" />
+                <Button x:Name="NewFileButton" Content="New file…" Click="NewFile_Click" ToolTip="Create a file" />
                 <Button Content="Open other…" Margin="8,0,0,0" Click="OpenOther_Click"
                         ToolTip="Open a file that is outside this workspace folder" />
                 <Button Content="Refresh" Margin="8,0,0,0" Click="Refresh_Click"
                         ToolTip="Read the folder again" />
             </StackPanel>
-            <TreeView x:Name="FileTree" SelectedItemChanged="FileTree_SelectedItemChanged"
+            <!-- Ctrl+F in the browser: shows only the files whose name contains the text -->
+            <TextBox x:Name="FileFilterBox" DockPanel.Dock="Top" Visibility="Collapsed" Margin="0,0,0,6"
+                     Padding="6,3" FontSize="12" TextChanged="FileFilter_TextChanged"
+                     PreviewKeyDown="FileFilter_PreviewKeyDown"
+                     ToolTip="Part of a file name, searched in all subfolders. Enter opens the first match, Esc clears and closes." />
+            <TreeView x:Name="FileTree" ScrollViewer.CanContentScroll="False" SelectedItemChanged="FileTree_SelectedItemChanged"
                       MouseDoubleClick="FileTree_MouseDoubleClick" />
         </DockPanel>
 
-        <!-- Editor on top, output below (or in its own window) -->
+        <!-- Editor on top (with its find bar), output below (or in its own window) -->
         <Grid>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" MinHeight="80" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition x:Name="SplitterRow" Height="5" />
                 <RowDefinition x:Name="PreviewRow" Height="*" />
             </Grid.RowDefinitions>
-            <TextBox x:Name="Editor" Grid.Row="0" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap"
+            <!-- Ctrl+F in the editor -->
+            <Border x:Name="FindBar" Grid.Row="0" Background="#1C1C1C" BorderBrush="#333333" BorderThickness="0,0,0,1"
+                    Padding="8,5" Visibility="Collapsed">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="✕" FontSize="10" Padding="7,3" Margin="6,0,0,0"
+                            ToolTip="Close (Esc)" Click="FindClose_Click" />
+                    <Button DockPanel.Dock="Right" Content="↓" FontSize="11" Padding="7,3" Margin="4,0,0,0"
+                            ToolTip="Next match (Enter, F3)" Click="FindNext_Click" />
+                    <Button DockPanel.Dock="Right" Content="↑" FontSize="11" Padding="7,3" Margin="8,0,0,0"
+                            ToolTip="Previous match (Shift+Enter, Shift+F3)" Click="FindPrevious_Click" />
+                    <TextBlock x:Name="FindCount" DockPanel.Dock="Right" FontSize="11" Opacity="0.7"
+                               VerticalAlignment="Center" Margin="10,0,0,0" />
+                    <TextBox x:Name="FindBox" FontSize="12" Padding="6,3" MaxWidth="380"
+                             HorizontalAlignment="Left" MinWidth="220"
+                             TextChanged="FindBox_TextChanged" PreviewKeyDown="FindBox_PreviewKeyDown"
+                             ToolTip="Text to find (case does not matter)" />
+                </DockPanel>
+            </Border>
+            <local:WritingBox x:Name="Editor" Grid.Row="1" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" FontFamily="Cascadia Mono, Consolas" FontSize="13"
                      Padding="10" BorderThickness="0" VerticalContentAlignment="Top" SpellCheck.IsEnabled="False"
                      TextChanged="Editor_TextChanged" PreviewKeyDown="Editor_PreviewKeyDown" />
-            <TextBlock x:Name="NoFileHint" Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center"
+            <TextBlock x:Name="NoFileHint" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center"
                        Opacity="0.6" TextWrapping="Wrap" Margin="20"
                        Text="Select a file in the file browser, or create a new one, to start editing." />
             <!-- LaTeX compilation errors -->
-            <TextBox x:Name="ErrorBox" Grid.Row="1" IsReadOnly="True" MaxHeight="130" TextWrapping="Wrap"
+            <TextBox x:Name="ErrorBox" Grid.Row="2" IsReadOnly="True" MaxHeight="130" TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" FontFamily="Cascadia Mono, Consolas" FontSize="12"
                      Foreground="#FF8B8B" Padding="10,6" BorderThickness="0" Visibility="Collapsed" />
-            <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Background="#22FFFFFF" />
-            <Grid Grid.Row="3" Background="#161616">
+            <GridSplitter Grid.Row="3" HorizontalAlignment="Stretch" Background="#22FFFFFF" />
+            <Grid Grid.Row="4" Background="#161616">
                 <local:PreviewView x:Name="DockedPreview" />
             </Grid>
         </Grid>

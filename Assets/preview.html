@@ -52,11 +52,22 @@
     let typesetting = Promise.resolve();
     // Replaces the content and typesets its equations. Runs are queued so a fast
     // sequence of edits never overlaps (MathJax must not typeset concurrently).
+    // The reader stays where they were: the scroll position is kept across the replacement
+    // (and again after the equations are typeset, which changes the height). A reader at the
+    // very end stays at the end.
+    const keepPlace = () => {
+      const y = window.scrollY;
+      const atEnd = y + window.innerHeight >= document.documentElement.scrollHeight - 2;
+      return () => window.scrollTo(0, atEnd ? document.documentElement.scrollHeight : y);
+    };
     window.renderPreview = () => {
       typesetting = typesetting.then(() => {
+        const restore = keepPlace();
         if (window.MathJax?.typesetClear) MathJax.typesetClear([content]);
         content.innerHTML = html;
-        if (window.MathJax?.typesetPromise && html.includes('class="math')) return MathJax.typesetPromise([content]);
+        restore();
+        if (window.MathJax?.typesetPromise && html.includes('class="math'))
+          return MathJax.typesetPromise([content]).then(restore);
       }).catch(() => {});
     };
     window.chrome.webview.addEventListener('message', e => {
