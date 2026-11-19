@@ -61,6 +61,9 @@ public sealed class WorkspaceOptions
 
     /// <summary>Names of the terminal tabs, restored when the workspace is opened again.</summary>
     public List<string> Tabs { get; set; } = new();
+
+    /// <summary>The folder of the device last shown in the SFTP window (SSH workspaces).</summary>
+    public string? SftpRemotePath { get; set; }
 }
 
 /// <summary>A saved SSH login. The password is encrypted with the app user's key.</summary>

@@ -14,7 +14,7 @@
     <AssemblyTitle>HB Voice Workspace</AssemblyTitle>
     <!-- Icon of the exe, and so of every window and the taskbar button (built from Assets\logo.png) -->
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>HB Voice Workspace</Product>
     <Company>Zamoilla</Company>
     <Authors>Raul Zamorano-Illanes</Authors>
@@ -29,6 +29,7 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
+    <PackageReference Include="SSH.NET" Version="2026.0.1" />
     <PackageReference Include="Whisper.net" Version="1.8.*" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.8.*" />
   </ItemGroup>

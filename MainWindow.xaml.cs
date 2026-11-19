@@ -9,6 +9,7 @@ using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Input;
 using System.Windows.Threading;
+using HB.Sftp;
 using HB.Speech;
 using HB.Terminal;
 using Microsoft.Win32;
@@ -82,6 +83,9 @@ public partial class MainWindow : Window
     }
 
     private Workspace? Current => WorkspaceList.SelectedItem as Workspace;
+
+    /// <summary>The SFTP window of each SSH workspace that has one open.</summary>
+    private readonly Dictionary<Workspace, SftpWindow> _sftpWindows = new();
 
     /// <summary>True when the window was closed to switch user rather than to quit.</summary>
     public bool LogoutRequested { get; private set; }
@@ -644,6 +648,38 @@ public partial class MainWindow : Window
         SshStatus.Text = workspace.SelectedTab!.View.ConnectSsh(host, port, user, SshPasswordBox.Password)
             ? $"Connecting to {user}@{host} in {workspace.SelectedTab.Title}…"
             : "The terminal is still starting, try again in a moment.";
+    }
+
+    /// <summary>Opens (or brings back) the file transfer window for the connection typed in the bar.</summary>
+    private void SftpOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current is not { IsSsh: true } workspace) return;
+        if (_sftpWindows.TryGetValue(workspace, out var open))
+        {
+            open.Activate();
+            return;
+        }
+        if (!TryReadSshFields(out var host, out int port, out var user)) return;
+
+        var options = workspace.Options;
+        options.SshHost = host;
+        options.SshPort = port;
+        options.SshUser = user;
+        SaveSettings();
+
+        var window = new SftpWindow(host, port, user, SshPasswordBox.Password, workspace.Path, options.SftpRemotePath)
+        {
+            Owner = this,
+        };
+        window.RemotePathChanged += path =>
+        {
+            options.SftpRemotePath = path;
+            SaveSettings();
+        };
+        window.Closed += (_, _) => _sftpWindows.Remove(workspace);
+        _sftpWindows[workspace] = window;
+        window.Show();
+        SshStatus.Text = $"SFTP window opened for {user}@{host}.";
     }
 
     // ---- Transcriber ----

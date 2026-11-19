@@ -90,6 +90,18 @@ In an SSH workspace the connection bar takes a host, port, user and password. **
 connections that every SSH workspace shares; the password is stored encrypted, as explained
 above. The Windows OpenSSH client (part of Windows) is what connects.
 
+**Files (SFTP)…** opens a file transfer window for the same device: this computer on the left,
+the device on the right, each with its folder path, parent and refresh buttons. Drag files or
+folders from one side to the other to copy them (also from Explorer onto the device side), or
+select them with Ctrl or Shift and use the → and ← buttons. Double-clicking a file copies it to
+the other side; double-clicking a folder opens it. Right-click for new folder, rename and delete
+(folders with everything in them). Whole folders are copied with their contents, a progress bar
+shows the current file and the total, and Cancel stops the copy and removes the half-copied file.
+The window connects with the host, port, user and password typed in the bar, trying the SSH keys
+in your `.ssh` folder first. The first time you connect to a device the window shows its key
+fingerprint and asks you to accept it; if the key changes later, it warns you. The device folder
+you were in is remembered per workspace.
+
 ### Markdown and LaTeX editors
 
 The middle column becomes a writing desk:
@@ -161,6 +173,7 @@ languages).
 | Ctrl+F | editor | Find in the text (Enter/F3 next, Shift+F3 previous, Esc close) |
 | Ctrl+S | editor | Save now (and compile LaTeX) |
 | Ctrl+wheel, Ctrl+0, Ctrl+± | PDF preview | Zoom |
+| Enter, Backspace, F5, F2, Del | SFTP window | Open / copy, parent folder, refresh, rename, delete |
 | Enter / Esc | filter boxes | Open the first match / clear and close |
 
 Text selected with the mouse anywhere in the program is copied to the clipboard.
@@ -234,6 +247,7 @@ with the tag's number.
 | `Terminal/` | ConPTY pseudo-console and the xterm.js terminal view (WebView2) |
 | `Documents/` | Markdown/LaTeX pane, preview, LaTeX compiler, find highlighter, Grammarly-aware editor |
 | `Speech/` | Whisper transcriber, Ogg Opus reader, Windows text-to-speech, transcript file |
+| `Sftp/` | SFTP window: session (SSH.NET), local and remote file sources, the two panes |
 | `Assets/` | xterm.js, MathJax, pdf.js and the HTML pages they run in; logo and icon |
 | `installer/HB.iss` | Inno Setup script of the installer |
 | `.github/workflows/release.yml` | Builds and publishes a release from a version tag |
@@ -241,6 +255,7 @@ with the tag's number.
 ## Built with
 
 [Whisper.net](https://github.com/sandrohanea/whisper.net) (speech recognition),
+[SSH.NET](https://github.com/sshnet/SSH.NET) (SFTP),
 [NAudio](https://github.com/naudio/NAudio) and [Concentus](https://github.com/lostromb/concentus)
 (audio), [Markdig](https://github.com/xoofx/markdig) (Markdown),
 [MathJax](https://www.mathjax.org/), [xterm.js](https://xtermjs.org/),
