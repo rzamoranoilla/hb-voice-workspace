@@ -561,13 +561,14 @@ public partial class MainWindow : Window
     private bool TryReadSshFields(out string host, out int port, out string user)
     {
         // The values are typed into a shell, so only plain host and user names are accepted.
+        // A user name may contain spaces (Windows accounts such as "John Smith"); ConnectSsh quotes it.
         host = SshHostBox.Text.Trim();
         user = SshUserBox.Text.Trim();
         port = 0;
         if (!Regex.IsMatch(host, @"^[A-Za-z0-9][A-Za-z0-9.\-:]*$"))
             SshStatus.Text = "Enter the host name or IP address of the device.";
-        else if (!Regex.IsMatch(user, @"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$"))
-            SshStatus.Text = "Enter the user name (letters, digits, dot, dash or underscore).";
+        else if (!Regex.IsMatch(user, @"^[A-Za-z0-9_][A-Za-z0-9_.\- ]*$"))
+            SshStatus.Text = "Enter the user name (letters, digits, spaces, dot, dash or underscore).";
         else if (!int.TryParse(SshPortBox.Text.Trim(), out port) || port is < 1 or > 65535)
             SshStatus.Text = "The port must be a number between 1 and 65535 (SSH normally uses 22).";
         else

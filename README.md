@@ -86,7 +86,8 @@ Text selected with the mouse is copied to the clipboard at once, in the terminal
 else in the program.
 
 In an SSH workspace the connection bar takes a host, port, user and password. **Connect** runs
-`ssh` in the current tab. **Save** keeps the connection under a name, in the list of saved
+`ssh` in the current tab. The user name may contain spaces, as Windows accounts often do; the
+program quotes it for the shell. **Save** keeps the connection under a name, in the list of saved
 connections that every SSH workspace shares; the password is stored encrypted, as explained
 above. The Windows OpenSSH client (part of Windows) is what connects.
 
