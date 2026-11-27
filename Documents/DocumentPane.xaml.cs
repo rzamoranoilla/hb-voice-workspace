@@ -101,6 +101,12 @@ public partial class DocumentPane : UserControl
             if (IsLatex) Compile();
         };
         _renderTimer.Tick += (_, _) => RenderMarkdown();
+        _quietTimer.Tick += (_, _) => OnQuiet();
+        _treeTimer.Tick += (_, _) =>
+        {
+            _treeTimer.Stop();
+            RefreshTree();
+        };
         UpdatePreviewPlacement();
         SetTerminalOpen(false);
     }
@@ -119,6 +125,7 @@ public partial class DocumentPane : UserControl
             BuildTree();
             var file = workspace.Options.DocumentFile;
             OpenFile(file != null && File.Exists(file) ? file : null);
+            StartWatching(workspace.Path);
         }
         UpdateBrowserVisibility();
     }
@@ -127,6 +134,7 @@ public partial class DocumentPane : UserControl
     public void Leave()
     {
         FlushSave();
+        StopWatching();
         _workspace = null;
     }
 
@@ -138,6 +146,7 @@ public partial class DocumentPane : UserControl
         try
         {
             File.WriteAllText(_file, Editor.Text, new UTF8Encoding(false));
+            _savedText = Editor.Text;
             _dirty = false;
             StatusText.Text = $"Saved {DateTime.Now:T}";
         }
@@ -164,6 +173,7 @@ public partial class DocumentPane : UserControl
     private void OpenFile(string? path)
     {
         FlushSave();
+        if (_outsideEditing) HideOutsideBanner();
         _file = path;
         if (path != null && !LoadText(path)) _file = null;
         if (_file == null) LoadText(null);
@@ -191,6 +201,7 @@ public partial class DocumentPane : UserControl
         try
         {
             Editor.Text = path == null ? "" : File.ReadAllText(path);
+            _savedText = Editor.Text;
             _dirty = false;
             StatusText.Text = "";
             return true;
@@ -475,7 +486,42 @@ public partial class DocumentPane : UserControl
         if (dialog.ShowDialog(Window.GetWindow(this)) == true) OpenFile(dialog.FileName);
     }
 
-    private void Refresh_Click(object sender, RoutedEventArgs e) => BuildTree();
+    private void Refresh_Click(object sender, RoutedEventArgs e) => RefreshTree();
+
+    /// <summary>Reads the folder again, keeping the folders that were open and the selected file.</summary>
+    private void RefreshTree()
+    {
+        var expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectExpanded(FileTree.Items, expanded);
+        var selected = (FileTree.SelectedItem as TreeViewItem)?.Tag is FileNode node ? node.Path : null;
+        BuildTree();
+        Reopen(FileTree.Items, expanded, selected);
+    }
+
+    private static void CollectExpanded(ItemCollection items, HashSet<string> expanded)
+    {
+        foreach (var item in items.OfType<TreeViewItem>())
+        {
+            if (item.Tag is not FileNode { Kind: FileKind.Folder } node || !item.IsExpanded) continue;
+            expanded.Add(node.Path);
+            CollectExpanded(item.Items, expanded);
+        }
+    }
+
+    private static void Reopen(ItemCollection items, HashSet<string> expanded, string? selected)
+    {
+        foreach (var item in items.OfType<TreeViewItem>())
+        {
+            if (item.Tag is not FileNode node) continue;
+            if (node.Kind == FileKind.Folder && expanded.Contains(node.Path))
+            {
+                item.IsExpanded = true; // fills the folder
+                Reopen(item.Items, expanded, selected);
+            }
+            else if (selected != null && string.Equals(node.Path, selected, StringComparison.OrdinalIgnoreCase))
+                item.IsSelected = true;
+        }
+    }
 
     // ---- File browser ----
 
@@ -824,6 +870,181 @@ public partial class DocumentPane : UserControl
     }
 
     private void Terminal_Click(object sender, RoutedEventArgs e) => TerminalToggleRequested?.Invoke();
+
+    // ---- Changes made outside the editor, e.g. by Claude asked in the terminal ----
+
+    private FileSystemWatcher? _watcher;
+    private readonly DispatcherTimer _quietTimer = new() { Interval = TimeSpan.FromMilliseconds(1500) };
+    private readonly DispatcherTimer _treeTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private bool _outsideEditing;    // the banner is up: another program is writing the open file
+    private bool _rebuildWanted;     // another part of the document changed: render or compile again when quiet
+    private int _reloadAttempts;
+    private string _savedText = "";  // the text as last read from or written to the file; our own writes are known by it
+
+    private void StartWatching(string folder)
+    {
+        StopWatching();
+        try
+        {
+            _watcher = new FileSystemWatcher(folder)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+            };
+            _watcher.Changed += (_, e) => Dispatcher.BeginInvoke(() => OnFileSystemChange(e.FullPath, nameChanged: false));
+            _watcher.Created += (_, e) => Dispatcher.BeginInvoke(() => OnFileSystemChange(e.FullPath, nameChanged: true));
+            _watcher.Deleted += (_, e) => Dispatcher.BeginInvoke(() => OnFileSystemChange(e.FullPath, nameChanged: true));
+            _watcher.Renamed += (_, e) => Dispatcher.BeginInvoke(() =>
+            {
+                OnFileSystemChange(e.OldFullPath, nameChanged: true);
+                OnFileSystemChange(e.FullPath, nameChanged: true);
+            });
+            _watcher.Error += (_, _) => Dispatcher.BeginInvoke(RestartTreeTimer);
+            _watcher.EnableRaisingEvents = true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            _watcher = null; // the folder cannot be watched: editing works, outside changes are not noticed
+        }
+    }
+
+    private void StopWatching()
+    {
+        _watcher?.Dispose();
+        _watcher = null;
+        _quietTimer.Stop();
+        _treeTimer.Stop();
+        _rebuildWanted = false;
+        if (_outsideEditing) HideOutsideBanner();
+    }
+
+    private void RestartTreeTimer()
+    {
+        _treeTimer.Stop();
+        _treeTimer.Start();
+    }
+
+    /// <summary>A file of the workspace changed on disk (also by our own save, which is told apart).</summary>
+    private void OnFileSystemChange(string path, bool nameChanged)
+    {
+        if (_workspace == null) return;
+        var build = Path.DirectorySeparatorChar + LatexCompiler.BuildFolderName;
+        if (path.Contains(build + Path.DirectorySeparatorChar) || path.EndsWith(build)) return; // the compiler at work
+
+        if (nameChanged) RestartTreeTimer();
+
+        if (_file != null && string.Equals(path, _file, StringComparison.OrdinalIgnoreCase))
+        {
+            if (nameChanged && !File.Exists(path))
+            {
+                StatusText.Text = "The file was deleted or renamed outside the editor; it is written again at the next change.";
+                return;
+            }
+            if (!_outsideEditing && SameAsSaved(path)) return; // our own save, or nothing new
+            ShowOutsideBanner();
+        }
+        else if (!nameChanged && IsPartOfDocument(path))
+        {
+            // A chapter, bibliography or image of the document: the output is rebuilt once things are quiet.
+            _rebuildWanted = true;
+            _quietTimer.Stop();
+            _quietTimer.Start();
+        }
+    }
+
+    private bool SameAsSaved(string path)
+    {
+        try { return File.ReadAllText(path) == _savedText; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false; // still being written
+        }
+    }
+
+    private bool IsPartOfDocument(string path)
+    {
+        var extension = Path.GetExtension(path);
+        var extensions = IsLatex ? LatexExtensions : MarkdownExtensions;
+        return extensions.Contains(extension, StringComparer.OrdinalIgnoreCase) ||
+               ImageExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void ShowOutsideBanner()
+    {
+        _quietTimer.Stop();
+        _quietTimer.Start();
+        if (_outsideEditing) return;
+        _outsideEditing = true;
+        _reloadAttempts = 0;
+        _saveTimer.Stop(); // keystrokes not saved yet must not be written over the outside changes
+        OutsideBannerText.Text = $"Changes are being made to {Path.GetFileName(_file)}…";
+        OutsideBanner.Visibility = Visibility.Visible;
+        Editor.IsReadOnly = true;
+        StatusText.Text = "Changes being made outside the editor…";
+    }
+
+    private void HideOutsideBanner()
+    {
+        _outsideEditing = false;
+        OutsideBanner.Visibility = Visibility.Collapsed;
+        Editor.IsReadOnly = _stopped;
+    }
+
+    /// <summary>No change for a while: the open file is read again and the output rebuilt.</summary>
+    private void OnQuiet()
+    {
+        _quietTimer.Stop();
+        bool rebuild = _rebuildWanted;
+        _rebuildWanted = false;
+        if (_outsideEditing)
+        {
+            if (!ReloadFromDisk())
+            {
+                // Still locked by the writer: a little more patience, then the user is told.
+                if (++_reloadAttempts < 10)
+                {
+                    _quietTimer.Start();
+                    return;
+                }
+                StatusText.Text = "The file is kept open by another program; press Refresh when it is done.";
+            }
+            HideOutsideBanner();
+            rebuild = true;
+        }
+        if (!rebuild) return;
+        if (IsLatex) Compile();
+        else RenderMarkdown();
+    }
+
+    /// <summary>Puts the file's new content in the editor, keeping the place the user was at.</summary>
+    private bool ReloadFromDisk()
+    {
+        if (_file == null) return true;
+        string text;
+        try { text = File.ReadAllText(_file); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+        bool droppedEdits = _dirty;
+        int caret = Editor.CaretIndex;
+        int line = Editor.GetFirstVisibleLineIndex();
+        if (text != Editor.Text)
+        {
+            _loadingFile = true;
+            try { Editor.Text = text; }
+            finally { _loadingFile = false; }
+            Editor.CaretIndex = Math.Min(caret, text.Length);
+            if (line >= 0 && line < Editor.LineCount) Editor.ScrollToLine(line);
+        }
+        _savedText = text;
+        _dirty = false;
+        _saveTimer.Stop();
+        StatusText.Text = droppedEdits
+            ? $"Updated from the file {DateTime.Now:T}; keystrokes not yet saved were dropped"
+            : $"Updated from the file {DateTime.Now:T}";
+        return true;
+    }
 
     // ---- Writing assistants (Grammarly) ----
 

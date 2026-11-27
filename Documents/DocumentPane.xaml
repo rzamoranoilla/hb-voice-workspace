@@ -109,6 +109,19 @@
             <TextBlock x:Name="NoFileHint" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center"
                        Opacity="0.6" TextWrapping="Wrap" Margin="20"
                        Text="Select a file in the file browser, or create a new one, to start editing." />
+            <!-- Over the editor while another program (Claude in the terminal, say) writes the open file -->
+            <Border x:Name="OutsideBanner" Grid.Row="1" Background="#C0141414" Visibility="Collapsed">
+                <Border HorizontalAlignment="Center" VerticalAlignment="Center" Background="#1E1E1E" BorderBrush="#46A758"
+                        BorderThickness="1" CornerRadius="6" Padding="22,16" MaxWidth="420">
+                    <StackPanel>
+                        <TextBlock x:Name="OutsideBannerText" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"
+                                   TextWrapping="Wrap" TextAlignment="Center" />
+                        <TextBlock FontSize="11" Opacity="0.75" Margin="0,6,0,12" TextWrapping="Wrap" TextAlignment="Center"
+                                   Text="Another program is writing this file, for example Claude in the terminal. The editor shows the new content and opens again when the changes stop." />
+                        <ProgressBar IsIndeterminate="True" Height="4" Foreground="#46A758" Background="#262626" BorderThickness="0" />
+                    </StackPanel>
+                </Border>
+            </Border>
             <!-- LaTeX compilation errors -->
             <TextBox x:Name="ErrorBox" Grid.Row="2" IsReadOnly="True" MaxHeight="130" TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" FontFamily="Cascadia Mono, Consolas" FontSize="12"

@@ -116,6 +116,14 @@ The middle column becomes a writing desk:
   screen. The preview keeps your reading position when the document is rebuilt after a change.
 - **Terminal** opens a PowerShell in the document folder, under the transcriber, for `git`,
   scripts or anything else.
+- **Edits made by other programs** are picked up. Ask Claude Code in that terminal to change the
+  open file, or edit it in any other editor: as soon as the file is written, a banner saying
+  "Changes are being made to …" covers the editor and locks it. When the writes stop for a
+  moment and a half, the editor shows the new content at the same place, unlocks, and the
+  preview or PDF is rebuilt. Keystrokes typed in the last second before the outside change, not
+  yet auto-saved, are dropped rather than written over it. Files created or deleted in the
+  folder appear in the file browser by themselves, and a change to another part of the document
+  (a chapter, the bibliography, an image) rebuilds the output.
 
 **Markdown** is rendered as you type. Equations use MathJax: `$a^2 + b^2 = c^2$` inline and
 `$$ … $$` on its own line for a display equation. Images use the usual syntax and can point to
