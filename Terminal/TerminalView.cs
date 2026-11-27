@@ -95,7 +95,10 @@ public sealed class TerminalView : ContentControl, IDisposable
         _sshPassword = password.Length > 0 ? password : null;
         _sshPasswordDeadline = DateTime.UtcNow.AddSeconds(60);
         _recentOutput = "";
-        _console.Write($"ssh -p {port} {user}@{host}\r");
+        // A user name with spaces (a Windows account, say) is passed with -l inside PowerShell single
+        // quotes, which take the text literally; plain names keep the familiar user@host form.
+        var target = user.Contains(' ') ? $"-l '{user.Replace("'", "''")}' {host}" : $"{user}@{host}";
+        _console.Write($"ssh -p {port} {target}\r");
         FocusTerminal();
         return true;
     }
